@@ -1,8 +1,8 @@
 // src/App.jsx
-// Observação: mantenha face-api.js, @supabase/supabase-js e xlsx instalados
 import React, { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { createClient } from "@supabase/supabase-js";
+import "./styles.css";
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -40,7 +40,7 @@ export default function App() {
 
   // CONFIG
   const DEDUP_MS = 5 * 60 * 1000; // 5 minutos para evitar duplicação de presença
-  const DETECTION_INTERVAL_MS = 2500; // intervalo do loop
+  const DETECTION_INTERVAL_MS = 2500; // intervalo padrão (desktop)
   const MATCH_THRESHOLD = 0.55; // face matcher threshold (ajustável)
 
   // lastSeen local to avoid hammering DB when same person is in frame repeatedly
@@ -318,6 +318,9 @@ export default function App() {
       attendanceInterval.current = null;
     }
 
+    // adjust interval for mobile to save CPU/battery
+    const intervalMs = (typeof window !== "undefined" && window.innerWidth <= 540) ? 4000 : DETECTION_INTERVAL_MS;
+
     // detection loop
     attendanceInterval.current = setInterval(async () => {
       try {
@@ -331,7 +334,7 @@ export default function App() {
           .withFaceDescriptors();
 
         if (!detections || detections.length === 0) {
-          // optionally update status: setStatusMsg('Sem rosto detectado');
+          // optional: setStatusMsg('Sem rosto detectado');
           return;
         }
 
@@ -391,7 +394,7 @@ export default function App() {
       } catch (err) {
         console.error("Erro no loop de reconhecimento", err);
       }
-    }, DETECTION_INTERVAL_MS);
+    }, intervalMs);
   }
 
   function stopAttendanceLoop() {
@@ -420,206 +423,184 @@ export default function App() {
     XLSX.writeFile(wb, "presencas.xlsx");
   }
 
-  // ---------- UI ----------
+  // UI
   return (
-    <div className="min-h-screen bg-gray-50 p-4 font-sans">
-      <header className="max-w-3xl mx-auto mb-6">
-        <h1 className="text-2xl font-bold">MVP - Presença Facial</h1>
-        <p className="text-sm text-gray-600">Modelos: {loadingModels ? "carregando..." : faceapiLoaded ? "pronto" : "erro"}</p>
+    <div className="app-root">
+      <header className="app-header">
+        <div className="header-inner">
+          <div className="brand">
+            <div className="logo">📸</div>
+            <div>
+              <h1 className="title">FacePresence</h1>
+              <p className="subtitle">MVP - Presença Facial</p>
+            </div>
+          </div>
+
+          <div className="header-actions">
+            <div className="models-status">Modelos: {loadingModels ? "carregando..." : faceapiLoaded ? "pronto" : "erro"}</div>
+            {!user ? (
+              <button className="btn primary" onClick={loginDemo}>Entrar (demo)</button>
+            ) : (
+              <div className="user-pill">{user.name}</div>
+            )}
+          </div>
+        </div>
       </header>
 
-      {!user ? (
-        <div className="max-w-md mx-auto bg-white p-4 rounded shadow">
-          <h2 className="text-lg">Login (demo)</h2>
-          <button className="mt-4 px-4 py-2 bg-blue-600 text-white rounded" onClick={loginDemo}>
-            Entrar como demo
-          </button>
-        </div>
-      ) : (
-        <main className="max-w-4xl mx-auto">
-          <nav className="mb-4 flex gap-2">
-            <button className={`px-3 py-2 rounded ${route === "dashboard" ? "bg-blue-600 text-white" : "bg-white"}`} onClick={() => setRoute("dashboard")}>
-              Dashboard
-            </button>
-            <button
-              className={`px-3 py-2 rounded ${route === "register" ? "bg-blue-600 text-white" : "bg-white"}`}
-              onClick={() => {
-                setRoute("register");
-                fetchCompanies();
-              }}
-            >
-              Registrar Funcionário
-            </button>
-            <button className={`px-3 py-2 rounded ${route === "attendance" ? "bg-blue-600 text-white" : "bg-white"}`} onClick={() => setRoute("attendance")}>
-              Tela de Presença
-            </button>
-            <button
-              className={`px-3 py-2 rounded ${route === "history" ? "bg-blue-600 text-white" : "bg-white"}`}
-              onClick={() => {
-                setRoute("history");
-                fetchAttendances({ company_id: selectedCompany });
-              }}
-            >
-              Histórico
-            </button>
-          </nav>
+      <main className="app-main">
+        {!user ? (
+          <div className="card center-card">
+            <h2>Login (demo)</h2>
+            <p>Entre rapidamente para testar o sistema.</p>
+            <button className="btn primary" onClick={loginDemo}>Entrar como demo</button>
+          </div>
+        ) : (
+          <div className="layout">
+            <aside className="sidebar" aria-hidden={typeof window !== "undefined" && window.innerWidth <= 900}>
+              <nav>
+                <button className={`nav-btn ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}>Dashboard</button>
+                <button className={`nav-btn ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}>Registrar Funcionário</button>
+                <button className={`nav-btn ${route === "attendance" ? "active" : ""}`} onClick={() => setRoute("attendance")}>Tela de Presença</button>
+                <button className={`nav-btn ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}>Histórico</button>
+              </nav>
 
-          {route === "dashboard" && (
-            <section className="bg-white p-4 rounded shadow">
-              <h2 className="text-lg font-semibold">Dashboard</h2>
-              <p className="mt-2">Selecione a empresa para operar:</p>
-              <select
-                className="mt-2 p-2 border"
-                value={selectedCompany || ""}
-                onChange={(e) => {
-                  const v = e.target.value || null;
-                  setSelectedCompany(v);
-                  fetchEmployees(v);
-                }}
-              >
-                <option value="">-- selecione --</option>
-                {companies.map((c) => (
-                  <option key={c.id} value={String(c.id)}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-              <div className="mt-4">
-                <p>Funcionários cadastrados: {employees.length}</p>
-                <p>Registros: {attendances.length}</p>
+              <div className="sidebar-footer">
+                <small>Feito como esqueleto</small>
               </div>
-            </section>
-          )}
+            </aside>
 
-          {route === "register" && (
-            <section className="bg-white p-4 rounded shadow">
-              <h2 className="text-lg font-semibold">Registrar Funcionário</h2>
-              <div className="mt-2">
-                <label>Empresa</label>
-                <select
-                  className="block p-2 border"
-                  value={selectedCompany || ""}
-                  onChange={(e) => {
-                    const v = e.target.value || null;
-                    setSelectedCompany(v);
-                    fetchEmployees(v);
-                  }}
-                >
-                  <option value="">-- selecione --</option>
-                  {companies.map((c) => (
-                    <option key={c.id} value={String(c.id)}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            <section className="content">
+              {route === "dashboard" && (
+                <div className="card">
+                  <h2>Dashboard</h2>
+                  <div className="row gap">
+                    <div className="col">
+                      <label className="label">Empresa</label>
+                      <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
+                        <option value="">-- selecione --</option>
+                        {companies.map((c) => (
+                          <option key={c.id} value={String(c.id)}>{c.name}</option>
+                        ))}
+                      </select>
+                    </div>
 
-              <div className="mt-2">
-                <label>Nome</label>
-                <input className="block p-2 border w-full" value={newName} onChange={(e) => setNewName(e.target.value)} />
-                <label className="mt-2">Cargo</label>
-                <input className="block p-2 border w-full" value={newRole} onChange={(e) => setNewRole(e.target.value)} />
-              </div>
-
-              <div className="mt-3">
-                <div className="flex gap-2 items-center">
-                  <button className="px-3 py-2 bg-green-600 text-white rounded" onClick={openCamera}>
-                    Abrir Câmera
-                  </button>
-                  <button className="px-3 py-2 bg-yellow-500 text-white rounded" onClick={switchFacing}>
-                    Trocar Frente/Trás
-                  </button>
-                  <button className="px-3 py-2 bg-indigo-600 text-white rounded" onClick={handleCaptureForRegister}>
-                    Capturar Rostos
-                  </button>
+                    <div className="col stats">
+                      <div className="stat">
+                        <div className="stat-value">{employees.length}</div>
+                        <div className="stat-label">Funcionários</div>
+                      </div>
+                      <div className="stat">
+                        <div className="stat-value">{attendances.length}</div>
+                        <div className="stat-label">Registros</div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
+              )}
 
-                <video ref={videoRef} className="w-full mt-2 rounded border" autoPlay muted playsInline style={{ maxHeight: 300 }} />
-                <p className="mt-2 text-sm">Capturas: {capturedDescriptors.length}</p>
+              {route === "register" && (
+                <div className="card">
+                  <h2>Registrar Funcionário</h2>
 
-                <div className="mt-2">
-                  <label className="flex items-center gap-2">
-                    <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-                    Aceito que meus dados biométricos (descritores) sejam armazenados para controle de presença.
-                  </label>
+                  <div className="form-row">
+                    <label>Empresa</label>
+                    <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
+                      <option value="">-- selecione --</option>
+                      {companies.map((c) => (<option key={c.id} value={String(c.id)}>{c.name}</option>))}
+                    </select>
+                  </div>
+
+                  <div className="form-row">
+                    <label>Nome</label>
+                    <input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} />
+                  </div>
+
+                  <div className="form-row">
+                    <label>Cargo</label>
+                    <input className="input" value={newRole} onChange={(e) => setNewRole(e.target.value)} />
+                  </div>
+
+                  <div className="form-row actions">
+                    <div className="btn-group">
+                      <button className="btn green" onClick={openCamera}>Abrir Câmera</button>
+                      <button className="btn yellow" onClick={switchFacing}>Trocar Frente/Trás</button>
+                      <button className="btn indigo" onClick={handleCaptureForRegister}>Capturar Rostos</button>
+                    </div>
+                  </div>
+
+                  <div className="video-wrapper">
+                    <video ref={videoRef} className="video" autoPlay muted playsInline />
+                    <div className="capture-info">Capturas: {capturedDescriptors.length}</div>
+                  </div>
+
+                  <div className="form-row">
+                    <label className="checkbox-label"><input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} /> Aceito que meus dados biométricos sejam armazenados.</label>
+                  </div>
+
+                  <div className="form-row">
+                    <button className="btn primary" onClick={saveNewEmployee}>Salvar Funcionário</button>
+                  </div>
                 </div>
+              )}
 
-                <div className="mt-2">
-                  <button className="px-4 py-2 bg-blue-600 text-white rounded" onClick={saveNewEmployee}>
-                    Salvar Funcionário
-                  </button>
+              {route === "attendance" && (
+                <div className="card">
+                  <h2>Tela de Presença</h2>
+                  <p className="muted">Empresa: {companies.find((c) => String(c.id) === String(selectedCompany))?.name || "nenhuma selecionada"}</p>
+
+                  <div className="row gap">
+                    <div>
+                      <button className="btn green" onClick={openCamera}>Abrir Câmera</button>
+                      <button className="btn purple" onClick={startAttendanceLoop}>Iniciar Reconhecimento</button>
+                      <button className="btn red" onClick={stopAttendanceLoop}>Parar</button>
+                      <button className="btn yellow" onClick={switchFacing}>Trocar Câmera</button>
+                    </div>
+                  </div>
+
+                  <div className="video-wrapper">
+                    <video ref={videoRef} className="video" autoPlay muted playsInline />
+                  </div>
+
+                  <p className="status" role="status">Status: {statusMsg}</p>
                 </div>
-              </div>
+              )}
+
+              {route === "history" && (
+                <div className="card">
+                  <h2>Histórico</h2>
+                  <div className="row gap">
+                    <button className="btn" onClick={() => fetchAttendances({ company_id: selectedCompany })}>Carregar</button>
+                    <button className="btn primary" onClick={exportAttendancesToExcel}>Exportar XLSX</button>
+                  </div>
+
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr><th>ID</th><th>Funcionário</th><th>Quando</th><th>Confiança</th></tr>
+                      </thead>
+                      <tbody>
+                        {attendances.map((a) => (
+                          <tr key={a.id}><td>{String(a.id).slice(0,6)}</td><td>{a.employees?.name || a.employee_id}</td><td>{new Date(a.attended_at).toLocaleString()}</td><td>{Number(a.confidence).toFixed(2)}</td></tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </section>
-          )}
+          </div>
+        )}
+      </main>
 
-          {route === "attendance" && (
-            <section className="bg-white p-4 rounded shadow">
-              <h2 className="text-lg font-semibold">Tela de Presença</h2>
-              <p className="mt-2">Empresa: {companies.find((c) => String(c.id) === String(selectedCompany))?.name || "nenhuma selecionada"}</p>
+      {/* BOTTOM NAV (aparece em telas pequenas via CSS) */}
+      <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
+        <button className={`nav-item ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}>Dashboard</button>
+        <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}>Registrar</button>
+        <button className={`nav-item ${route === "attendance" ? "active" : ""}`} onClick={() => setRoute("attendance")}>Presença</button>
+        <button className={`nav-item ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}>Histórico</button>
+      </div>
 
-              <div className="flex gap-2 mt-2">
-                <button className="px-3 py-2 bg-green-600 text-white rounded" onClick={openCamera}>
-                  Abrir Câmera
-                </button>
-                <button className="px-3 py-2 bg-purple-600 text-white rounded" onClick={startAttendanceLoop}>
-                  Iniciar Reconhecimento
-                </button>
-                <button className="px-3 py-2 bg-red-600 text-white rounded" onClick={stopAttendanceLoop}>
-                  Parar
-                </button>
-                <button className="px-3 py-2 bg-yellow-500 text-white rounded" onClick={switchFacing}>
-                  Trocar Câmera
-                </button>
-              </div>
-
-              <video ref={videoRef} className="w-full mt-2 rounded border" autoPlay muted playsInline style={{ maxHeight: 360 }} />
-              <p className="mt-2 text-sm">Status: {statusMsg}</p>
-            </section>
-          )}
-
-          {route === "history" && (
-            <section className="bg-white p-4 rounded shadow">
-              <h2 className="text-lg font-semibold">Histórico</h2>
-              <div className="mt-2 flex gap-2">
-                <button className="px-3 py-2 bg-gray-200 rounded" onClick={() => fetchAttendances({ company_id: selectedCompany })}>
-                  Carregar
-                </button>
-                <button className="px-3 py-2 bg-blue-600 text-white rounded" onClick={exportAttendancesToExcel}>
-                  Exportar XLSX
-                </button>
-              </div>
-
-              <div className="mt-4 overflow-auto max-h-96">
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-100">
-                    <tr>
-                      <th>ID</th>
-                      <th>Funcionário</th>
-                      <th>Quando</th>
-                      <th>Confiança</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {attendances.map((a) => (
-                      <tr key={a.id} className="border-t">
-                        <td className="p-1">{String(a.id).slice(0, 6)}</td>
-                        <td className="p-1">{a.employees?.name || a.employee_id}</td>
-                        <td className="p-1">{new Date(a.attended_at).toLocaleString()}</td>
-                        <td className="p-1">{Number(a.confidence).toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
-        </main>
-      )}
-
-      <footer className="max-w-3xl mx-auto mt-6 text-sm text-gray-500">
-        Feito como esqueleto. Ajuste permissões Supabase e LGPD antes de usar em produção.
-      </footer>
+      <footer className="app-footer">Feito como esqueleto. Ajuste permissões Supabase e LGPD antes de usar em produção.</footer>
     </div>
   );
 }
