@@ -458,29 +458,33 @@ export default function App() {
   // UI
   return (
     <div className="app-root">
-      <header className="app-header">
-        <div className="header-inner">
-          <div className="brand">
-            <div className="logo">📸</div>
-            <div>
-              <h1 className="title">R.R. Prevenção em Saúde</h1>
-              <p className="subtitle">Presença Facial</p>
-            </div>
-          </div>
+        <header className="app-header">
+  <div className="header-inner">
+    <div className="brand">
+      {/* Substitua o caminho abaixo pelo caminho da sua logo */}
+      <img src="/src/assets/logo_saude.png" alt="Logo da Clínica" className="logo-clinica" />
+      <div>
+        <h1 className="title">R.R. Prevenção em Saúde</h1>
+        <p className="subtitle">Presença Facial</p>
+      </div>
+    </div>
 
-          <div className="header-actions">
-            <div className="models-status">Status: {loadingModels ? "carregando..." : faceapiLoaded ? "Online" : "Offline"}</div>
-            {!user ? (
-              <button className="btn primary" onClick={() => setRoute("login")}>Entrar</button>
-            ) : (
-              <>
-                <div className="user-pill">{user.name}</div>
-                <button className="btn" onClick={handleLogout}>Sair</button>
-              </>
-            )}
-          </div>
-        </div>
-      </header>
+    <div className="header-actions">
+      <div className="models-status">
+        Status: {loadingModels ? "carregando..." : faceapiLoaded ? "Online" : "Offline"}
+      </div>
+
+      {/* Botão de login só aparece se o usuário não estiver logado e se você quiser exibir em outras telas */}
+      {user && (
+        <>
+          <div className="user-pill">{user.name}</div>
+          <button className="btn" onClick={handleLogout}>Sair</button>
+        </>
+      )}
+    </div>
+  </div>
+</header>
+      
 
       <main className="app-main">
         {!user ? (

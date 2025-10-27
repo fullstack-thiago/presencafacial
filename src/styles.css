@@ -68,6 +68,12 @@ body {
   width: 100%;
 }
 
+.logo-clinica {
+  width: 80px;       /* largura desejada */
+  height: auto;      /* mantém proporção */
+  object-fit: contain; /* garante que não distorça */
+}
+
 .brand {
   display: flex;
   align-items: center;
