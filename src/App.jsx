@@ -3,6 +3,7 @@ import React, { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { createClient } from "@supabase/supabase-js";
 import "./styles.css";
+import logo from '/src/assets/logo_saude.png';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -462,7 +463,7 @@ export default function App() {
   <div className="header-inner">
     <div className="brand">
       {/* Substitua o caminho abaixo pelo caminho da sua logo */}
-      <img src="/src/assets/logo_saude.png" alt="Logo da Clínica" className="logo-clinica" />
+      <img src={logo} alt="Logo da Clínica" className="logo-clinica" />
       <div>
         <h1 className="title">R.R. Prevenção em Saúde</h1>
         <p className="subtitle">Presença Facial</p>
