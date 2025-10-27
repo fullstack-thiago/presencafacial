@@ -8,14 +8,25 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// --- HARD-CODED SINGLE USER (determinada no código) ---
+const HARDCODED_USER = {
+  username: "admin",
+  password: "senha123", // troque conforme quiser
+  name: "R.R.",
+};
+
 export default function App() {
   // --- routes / app state ---
-  const [route, setRoute] = useState("dashboard"); // 'login','dashboard','register','attendance','history'
+  const [route, setRoute] = useState("login"); // 'login','dashboard','register','attendance','history'
   const [loadingModels, setLoadingModels] = useState(true);
   const [faceapi, setFaceapi] = useState(null);
   const [faceapiLoaded, setFaceapiLoaded] = useState(false);
 
-  const [user, setUser] = useState(null); // demo single-account flow
+  const [user, setUser] = useState(null); // agora controlado por login real
+
+  // Login form
+  const [loginUsername, setLoginUsername] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
 
   // Entities
   const [companies, setCompanies] = useState([]);
@@ -143,10 +154,31 @@ export default function App() {
     }
   }
 
-  // ---------- demo login ----------
-  function loginDemo() {
-    setUser({ name: "EmpresaAdmin" });
-    setRoute("dashboard");
+  // ---------- login handling (single hard-coded user) ----------
+  function handleLogin(e) {
+    e && e.preventDefault && e.preventDefault();
+    if (loginUsername === HARDCODED_USER.username && loginPassword === HARDCODED_USER.password) {
+      setUser({ name: HARDCODED_USER.name, username: HARDCODED_USER.username });
+      setLoginPassword("");
+      setLoginUsername("");
+      setRoute("dashboard");
+      setStatusMsg("Usuário autenticado");
+    } else {
+      alert("Usuário ou senha inválidos");
+    }
+  }
+
+  function handleLogout() {
+    stopAttendanceLoop();
+    if (streamRef.current) {
+      try {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      } catch (e) {}
+      streamRef.current = null;
+    }
+    setUser(null);
+    setRoute("login");
+    setStatusMsg("");
   }
 
   // ---------- camera helpers ----------
@@ -431,17 +463,20 @@ export default function App() {
           <div className="brand">
             <div className="logo">📸</div>
             <div>
-              <h1 className="title">FacePresence</h1>
-              <p className="subtitle">MVP - Presença Facial</p>
+              <h1 className="title">R.R. Prevenção em Saúde</h1>
+              <p className="subtitle">Presença Facial</p>
             </div>
           </div>
 
           <div className="header-actions">
-            <div className="models-status">Modelos: {loadingModels ? "carregando..." : faceapiLoaded ? "pronto" : "erro"}</div>
+            <div className="models-status">Status: {loadingModels ? "carregando..." : faceapiLoaded ? "Online" : "Offline"}</div>
             {!user ? (
-              <button className="btn primary" onClick={loginDemo}>Entrar (demo)</button>
+              <button className="btn primary" onClick={() => setRoute("login")}>Entrar</button>
             ) : (
-              <div className="user-pill">{user.name}</div>
+              <>
+                <div className="user-pill">{user.name}</div>
+                <button className="btn" onClick={handleLogout}>Sair</button>
+              </>
             )}
           </div>
         </div>
@@ -449,10 +484,22 @@ export default function App() {
 
       <main className="app-main">
         {!user ? (
+          // Login page
           <div className="card center-card">
-            <h2>Login (demo)</h2>
-            <p>Entre rapidamente para testar o sistema.</p>
-            <button className="btn primary" onClick={loginDemo}>Entrar como demo</button>
+            <h2>Login</h2>
+            <form onSubmit={handleLogin} style={{ width: "100%" }}>
+              <div className="form-row">
+                <label className="label">Usuário</label>
+                <input className="input" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} />
+              </div>
+              <div className="form-row">
+                <label className="label">Senha</label>
+                <input className="input" type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} />
+              </div>
+              <div className="form-row">
+                <button className="btn primary" type="submit">Entrar</button>
+              </div>
+            </form>
           </div>
         ) : (
           <div className="layout">
@@ -464,9 +511,6 @@ export default function App() {
                 <button className={`nav-btn ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}>Histórico</button>
               </nav>
 
-              <div className="sidebar-footer">
-                <small>Feito como esqueleto</small>
-              </div>
             </aside>
 
             <section className="content">
@@ -592,15 +636,16 @@ export default function App() {
         )}
       </main>
 
-      {/* BOTTOM NAV (aparece em telas pequenas via CSS) */}
-      <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
-        <button className={`nav-item ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}>Dashboard</button>
-        <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}>Registrar</button>
-        <button className={`nav-item ${route === "attendance" ? "active" : ""}`} onClick={() => setRoute("attendance")}>Presença</button>
-        <button className={`nav-item ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}>Histórico</button>
-      </div>
+      {/* BOTTOM NAV (agora visível em todas as larguras) */}
+      {user && (
+        <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
+          <button className={`nav-item ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}>Dashboard</button>
+          <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}>Registrar</button>
+          <button className={`nav-item ${route === "attendance" ? "active" : ""}`} onClick={() => setRoute("attendance")}>Presença</button>
+          <button className={`nav-item ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}>Histórico</button>
+        </div>
+      )}
 
-      <footer className="app-footer">Feito como esqueleto. Ajuste permissões Supabase e LGPD antes de usar em produção.</footer>
     </div>
   );
 }
