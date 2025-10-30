@@ -20,6 +20,7 @@ body {
 :root {
   --primary-blue: #007bff;
   --light-blue: #e3f2fd;
+  --blue-bottons: #0282eb;
   --dark-blue: #0056b3;
   --accent-blue: #4dabf7;
   --gray-light: #f8f9fa;
@@ -169,7 +170,7 @@ body {
 .btn.red,
 .nav-btn,
 .nav-item {
-  background: linear-gradient(45deg, var(--primary-blue), var(--accent-blue));
+  background: linear-gradient(45deg, var(--accent-blue), var(--accent-blue));
   color: var(--white);
   box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
 }

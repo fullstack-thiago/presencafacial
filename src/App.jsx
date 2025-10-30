@@ -636,10 +636,10 @@ export default function App() {
       {/* BOTTOM NAV (agora visível em todas as larguras) */}
       {user && (
         <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
-          <button className={`nav-item ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}>Dashboard</button>
-          <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}>Registrar</button>
-          <button className={`nav-item ${route === "attendance" ? "active" : ""}`} onClick={() => setRoute("attendance")}>Presença</button>
-          <button className={`nav-item ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}>Histórico</button>
+          <button className={`nav-item ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}><span style={{ fontSize: "28px" }}>💻</span></button>
+          <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}><span style={{ color: "#ffffffff", fontSize: "26px" }}>+🧑‍💼</span></button>
+          <button className={`nav-item ${route === "attendance" ? "active" : ""}`} onClick={() => setRoute("attendance")}><span style={{ color: "#ffffffff", fontSize: "26px" }}>✋</span></button>
+          <button className={`nav-item ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}><span style={{ color: "#ffffffff", fontSize: "26px" }}>📋</span></button>
         </div>
       )}
 
