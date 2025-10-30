@@ -508,25 +508,16 @@ export default function App() {
           </div>
         ) : (
           <div className="layout">
-            <aside className="sidebar" aria-hidden={typeof window !== "undefined" && window.innerWidth <= 900}>
-              <nav>
-                <button className={`nav-btn ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}>Dashboard</button>
-                <button className={`nav-btn ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}>Registrar Funcionário</button>
-                <button className={`nav-btn ${route === "attendance" ? "active" : ""}`} onClick={() => setRoute("attendance")}>Tela de Presença</button>
-                <button className={`nav-btn ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}>Histórico</button>
-              </nav>
-
-            </aside>
-
             <section className="content">
               {route === "dashboard" && (
                 <div className="card">
                   <h2>Dashboard</h2>
                   <div className="row gap">
                     <div className="col">
-                      <label className="label">Empresa</label>
+                      <label className="label">🏢 - Empresa </label>
+                      <br></br>
                       <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
-                        <option value="">-- selecione --</option>
+                        <option value="">-- selecione a empresa --</option>
                         {companies.map((c) => (
                           <option key={c.id} value={String(c.id)}>{c.name}</option>
                         ))}
@@ -549,12 +540,12 @@ export default function App() {
 
               {route === "register" && (
                 <div className="card">
-                  <h2>Registrar Funcionário</h2>
-
+                  <h2>✚ Registrar Funcionário</h2>
+                    <br></br>
                   <div className="form-row">
                     <label>Empresa</label>
                     <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
-                      <option value="">-- selecione --</option>
+                      <option value="">-- selecione a empresa --</option>
                       {companies.map((c) => (<option key={c.id} value={String(c.id)}>{c.name}</option>))}
                     </select>
                   </div>
@@ -594,9 +585,9 @@ export default function App() {
 
               {route === "attendance" && (
                 <div className="card">
-                  <h2>Tela de Presença</h2>
+                  <h2>✅ Tela de Presença</h2>
                   <p className="muted">Empresa: {companies.find((c) => String(c.id) === String(selectedCompany))?.name || "nenhuma selecionada"}</p>
-
+                      <br></br>
                   <div className="row gap">
                     <div>
                       <button className="btn green" onClick={openCamera}>Abrir Câmera</button>
@@ -616,7 +607,8 @@ export default function App() {
 
               {route === "history" && (
                 <div className="card">
-                  <h2>Histórico</h2>
+                  <h2>📋 Histórico</h2>
+                  <br></br>
                   <div className="row gap">
                     <button className="btn" onClick={() => fetchAttendances({ company_id: selectedCompany })}>Carregar</button>
                     <button className="btn primary" onClick={exportAttendancesToExcel}>Exportar XLSX</button>
