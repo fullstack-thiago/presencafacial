@@ -175,7 +175,7 @@ body {
 }
 
 .nav-item {
-  background: linear-gradient(45deg, var(--light-blue), var(--light-blue));
+  background: linear-gradient(45deg, var(--gray-light), var(--gray-light));
 }
 
 .btn.primary:hover,
