@@ -35,7 +35,7 @@ export default function App() {
   const [selectedCompany, setSelectedCompany] = useState(null); // keep as string or uuid
 
   // Camera / attendance
-  const attendanceInterval = useRef(null); // not used but left for backward compatibility
+  const attendanceInterval = useRef(null); // kept for compatibility
   const recognitionRaf = useRef(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null); // overlay canvas
@@ -59,7 +59,10 @@ export default function App() {
   // Fullscreen camera app mode
   const [cameraFullscreen, setCameraFullscreen] = useState(false);
 
-  // CONFIG (made more aggressive for faster detection)
+  // Auto recognition toggle (new)
+  const [autoRecognitionEnabled, setAutoRecognitionEnabled] = useState(true);
+
+  // CONFIG (made faster)
   const DEDUP_MS = 5 * 60 * 1000; // 5 minutos para evitar duplicação de presença
   const DETECTION_INTERVAL_MS = 800; // intervalo padrão (mais rápido)
   const MATCH_THRESHOLD = 0.55; // face matcher threshold (ajustável)
@@ -121,6 +124,20 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [facingMode, route]);
+
+  // If user toggles auto-recognition while fullscreen, start/stop accordingly
+  useEffect(() => {
+    if (!cameraFullscreen) return;
+    if (autoRecognitionEnabled) {
+      // start recognition if camera is open
+      if (videoRef.current && streamRef.current) {
+        prepareFaceMatcherAndStart();
+      }
+    } else {
+      stopRecognitionLoop();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRecognitionEnabled, cameraFullscreen]);
 
   // ---------- Supabase helpers ----------
   async function fetchCompanies() {
@@ -235,13 +252,11 @@ export default function App() {
         }
       }, 400);
 
-      // auto-start recognition when camera opens and fullscreen active
-      if (cameraFullscreen) {
-        // ensure employees loaded
+      // auto-start recognition when camera opens and fullscreen active + toggle enabled
+      if (cameraFullscreen && autoRecognitionEnabled) {
         if (!selectedCompany) {
           setStatusMsg('Selecione a empresa antes de abrir a câmera');
         } else {
-          // prepare matcher and start
           await prepareFaceMatcherAndStart();
         }
       }
@@ -661,7 +676,12 @@ export default function App() {
                   {!cameraFullscreen ? (
                     <>
                       <h2>✅ Tela de Presença</h2>
-                      <p className="muted">Empresa: Bela Tintas</p>
+                      <p className="muted">Empresa: {companies.find((c) => String(c.id) === String(selectedCompany))?.name || 'nenhuma selecionada'}</p>
+
+                      <div className="form-row">
+                        <label className="checkbox-label"><input type="checkbox" checked={autoRecognitionEnabled} onChange={(e) => setAutoRecognitionEnabled(e.target.checked)} /> Reconhecimento automático</label>
+                      </div>
+
                       <br />
                       <div className="form-row">
                         <button className="btn primary" onClick={() => { setCameraFullscreen(true); openCamera(); }}>Abrir Câmera</button>
@@ -713,7 +733,7 @@ export default function App() {
 
           {/* recent matches top-left */}
           <div className="recent-matches left">
-            <h4>Últimos registros</h4>
+            <h4>Últimos</h4>
             <ul>
               {recentMatches.map((m) => (
                 <li key={m.id + String(m.timestamp)}>{m.name}</li>
@@ -721,7 +741,7 @@ export default function App() {
             </ul>
           </div>
 
-          {/* floating controls at bottom center: only switch camera remains (icon) */}
+          {/* floating controls at bottom center: keep only switch camera */}
           <div className="camera-controls centered">
             <button className="btn icon-btn" onClick={() => { switchFacing(); stopRecognitionLoop(); setTimeout(() => openCamera(), 400); }} aria-label="Trocar">🔁</button>
           </div>
@@ -742,4 +762,4 @@ export default function App() {
 }
 
 
-
+/* FILE: src/styles.css - UPDATES (no visual changes required for toggle; using existing checkbox styles) */
