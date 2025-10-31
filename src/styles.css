@@ -175,7 +175,7 @@ body {
 }
 
 .nav-item {
-  background: linear-gradient(45deg, var(--gray-light), var(--gray-light));
+  background: linear-gradient(45deg, var(--light-blue), var(--light-blue));
 }
 
 .btn.primary:hover,
@@ -508,7 +508,7 @@ body {
   justify-content: space-between;
   padding: 8px;
   gap: 8px;
-  background: linear-gradient(90deg, rgba(255,255,255,0.96), rgba(227,242,253,0.95));
+  background: linear-gradient(45deg, var(--light-blue), var(--light-blue));
   box-shadow: 0 12px 40px rgba(11, 40, 80, 0.12);
   border: 1px solid rgba(0,0,0,0.06);
 }
