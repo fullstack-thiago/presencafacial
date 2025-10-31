@@ -1,4 +1,4 @@
-// src/App.jsx
+// FILE: src/App.jsx
 import React, { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { createClient } from "@supabase/supabase-js";
@@ -37,6 +37,7 @@ export default function App() {
   // Camera / attendance
   const attendanceInterval = useRef(null);
   const videoRef = useRef(null);
+  const canvasRef = useRef(null); // overlay canvas
   const streamRef = useRef(null); // ← usar ref para stream para cleanup seguro
   const [facingMode, setFacingMode] = useState("environment");
   const [statusMsg, setStatusMsg] = useState("");
@@ -50,6 +51,13 @@ export default function App() {
   // History
   const [attendances, setAttendances] = useState([]);
 
+  // LIVE match list and overlay toggle
+  const [recentMatches, setRecentMatches] = useState([]); // small live list
+  const [showOverlay, setShowOverlay] = useState(true);
+
+  // Fullscreen camera app mode
+  const [cameraFullscreen, setCameraFullscreen] = useState(false);
+
   // CONFIG
   const DEDUP_MS = 5 * 60 * 1000; // 5 minutos para evitar duplicação de presença
   const DETECTION_INTERVAL_MS = 2500; // intervalo padrão (desktop)
@@ -57,6 +65,10 @@ export default function App() {
 
   // lastSeen local to avoid hammering DB when same person is in frame repeatedly
   const lastSeenRef = useRef({}); // { [employeeId]: timestamp }
+
+  // guards
+  const recognitionRunningRef = useRef(false);
+  const isProcessingRef = useRef(false);
 
   // ---------- load face-api dynamically and models ----------
   useEffect(() => {
@@ -82,18 +94,13 @@ export default function App() {
     }
 
     loadFaceApiAndModels();
+
     fetchCompanies();
 
     return () => {
       mounted = false;
       stopAttendanceLoop();
-      // cleanup camera
-      if (streamRef.current) {
-        try {
-          streamRef.current.getTracks().forEach((t) => t.stop());
-        } catch (e) {}
-        streamRef.current = null;
-      }
+      stopCamera();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -171,12 +178,7 @@ export default function App() {
 
   function handleLogout() {
     stopAttendanceLoop();
-    if (streamRef.current) {
-      try {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-      } catch (e) {}
-      streamRef.current = null;
-    }
+    stopCamera();
     setUser(null);
     setRoute("login");
     setStatusMsg("");
@@ -216,6 +218,18 @@ export default function App() {
       console.error("Erro abrir câmera", err);
       setStatusMsg("Erro ao abrir câmera: " + String(err));
     }
+  }
+
+  function stopCamera() {
+    if (streamRef.current) {
+      try {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      } catch (e) {
+        console.error('Erro ao parar tracks', e);
+      }
+      streamRef.current = null;
+    }
+    if (videoRef.current) videoRef.current.srcObject = null;
   }
 
   function switchFacing() {
@@ -306,7 +320,7 @@ export default function App() {
     }
   }
 
-  // ---------- attendance loop ----------
+  // ---------- attendance loop with overlay drawing ----------
   async function startAttendanceLoop() {
     if (!selectedCompany) {
       setStatusMsg("Selecione uma empresa primeiro");
@@ -318,6 +332,11 @@ export default function App() {
     }
     if (!videoRef.current) {
       setStatusMsg("Vídeo não disponível");
+      return;
+    }
+
+    if (recognitionRunningRef.current) {
+      setStatusMsg('Reconhecimento já em execução');
       return;
     }
 
@@ -335,6 +354,10 @@ export default function App() {
 
     setEmployees(emps);
 
+    // map id -> name for overlay labels
+    const idNameMap = {};
+    emps.forEach((it) => { idNameMap[String(it.id)] = it.name; });
+
     // build labeled descriptors (converted to Float32Array)
     const labeled = emps.map((e2) => {
       const descs = (e2.descriptors || []).map((d) => new Float32Array(d));
@@ -344,6 +367,7 @@ export default function App() {
 
     const faceMatcher = new faceapi.FaceMatcher(labeled, MATCH_THRESHOLD);
     setStatusMsg("🔄 Reconhecimento contínuo iniciado...");
+    recognitionRunningRef.current = true;
 
     // clear previous interval
     if (attendanceInterval.current) {
@@ -354,10 +378,25 @@ export default function App() {
     // adjust interval for mobile to save CPU/battery
     const intervalMs = (typeof window !== "undefined" && window.innerWidth <= 540) ? 4000 : DETECTION_INTERVAL_MS;
 
+    // prepare canvas size
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+
+    function resizeCanvas() {
+      if (!canvas || !video) return;
+      canvas.width = video.videoWidth || video.clientWidth;
+      canvas.height = video.videoHeight || video.clientHeight;
+    }
+
     // detection loop
     attendanceInterval.current = setInterval(async () => {
+      if (isProcessingRef.current) return; // avoid overlapping
+      isProcessingRef.current = true;
       try {
         if (!videoRef.current || videoRef.current.paused || videoRef.current.ended) return;
+
+        // ensure canvas size
+        resizeCanvas();
 
         const options = new faceapi.TinyFaceDetectorOptions();
         // detect all faces in frame (to support multiple people)
@@ -366,23 +405,51 @@ export default function App() {
           .withFaceLandmarks()
           .withFaceDescriptors();
 
+        const ctx = canvas ? canvas.getContext('2d') : null;
+        if (ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          // optional: semi-transparent dark layer
+          // ctx.fillStyle = 'rgba(0,0,0,0.0)'; ctx.fillRect(0,0,canvas.width,canvas.height);
+        }
+
         if (!detections || detections.length === 0) {
-          // optional: setStatusMsg('Sem rosto detectado');
+          // nothing detected
           return;
         }
 
         // iterate detections
         for (const det of detections) {
           const best = faceMatcher.findBestMatch(det.descriptor);
-          if (best.label !== "unknown") {
-            const matchedEmployeeId = best.label; // string
-            const confidence = best.distance;
+          const label = best.label;
+
+          // draw box
+          if (ctx) {
+            const box = det.detection.box;
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = 'rgba(0, 190, 120, 0.9)';
+            ctx.strokeRect(box.x, box.y, box.width, box.height);
+
+            // draw name (only name requested)
+            const nameText = (label !== 'unknown') ? (idNameMap[label] || label) : 'Desconhecido';
+            ctx.font = '18px Inter, Arial';
+            ctx.fillStyle = 'rgba(0, 190, 120, 0.95)';
+            const textWidth = ctx.measureText(nameText).width + 12;
+            const textHeight = 26;
+            // background for text
+            ctx.fillRect(box.x, box.y - textHeight - 6, textWidth, textHeight);
+            ctx.fillStyle = '#fff';
+            ctx.fillText(nameText, box.x + 6, box.y - 8);
+          }
+
+          if (label !== 'unknown') {
+            const matchedEmployeeId = label; // string
 
             // local dedup: check lastSeenRef
             const lastSeen = lastSeenRef.current[matchedEmployeeId];
             const now = Date.now();
             if (lastSeen && now - lastSeen < DEDUP_MS) {
-              setStatusMsg(`⚠️ ${matchedEmployeeId} já registrado nos últimos ${Math.round(DEDUP_MS / 60000)} min`);
+              // update recentMatches for UI
+              setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idNameMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
               continue;
             }
 
@@ -406,7 +473,7 @@ export default function App() {
                 {
                   company_id: String(selectedCompany),
                   employee_id: matchedEmployeeId,
-                  confidence,
+                  confidence: best.distance,
                 },
               ]);
               if (insertErr) {
@@ -414,18 +481,22 @@ export default function App() {
                 setStatusMsg("Erro ao salvar presença");
               } else {
                 lastSeenRef.current[matchedEmployeeId] = now;
-                setStatusMsg(`✅ Presença registrada: ${matchedEmployeeId} (conf: ${Number(confidence).toFixed(2)})`);
+                setStatusMsg(`✅ Presença registrada: ${idNameMap[matchedEmployeeId] || matchedEmployeeId}`);
+                // update recent matches
+                setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idNameMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
                 // opcional: atualizar histórico local
                 fetchAttendances({ company_id: selectedCompany });
               }
             } else {
               lastSeenRef.current[matchedEmployeeId] = now;
-              setStatusMsg(`⚠️ ${matchedEmployeeId} já registrado nos últimos ${Math.round(DEDUP_MS / 60000)} min`);
+              setStatusMsg(`⚠️ ${idNameMap[matchedEmployeeId] || matchedEmployeeId} já registrado nos últimos ${Math.round(DEDUP_MS / 60000)} min`);
             }
           }
         }
       } catch (err) {
         console.error("Erro no loop de reconhecimento", err);
+      } finally {
+        isProcessingRef.current = false;
       }
     }, intervalMs);
   }
@@ -435,6 +506,8 @@ export default function App() {
       clearInterval(attendanceInterval.current);
       attendanceInterval.current = null;
     }
+    recognitionRunningRef.current = false;
+    isProcessingRef.current = false;
     setStatusMsg("⏹️ Reconhecimento parado");
   }
 
@@ -459,33 +532,31 @@ export default function App() {
   // UI
   return (
     <div className="app-root">
-        <header className="app-header">
-  <div className="header-inner">
-    <div className="brand">
-      {/* Substitua o caminho abaixo pelo caminho da sua logo */}
-      <img src={logo} alt="Logo da Clínica" className="logo-clinica" />
-      <div>
-        <h1 className="title">R.R. Prevenção em Saúde</h1>
-        <p className="subtitle">Presença Facial</p>
-      </div>
-    </div>
+      <header className="app-header">
+        <div className="header-inner">
+          <div className="brand">
+            {/* Substitua o caminho abaixo pelo caminho da sua logo */}
+            <img src={logo} alt="Logo da Clínica" className="logo-clinica" />
+            <div>
+              <h1 className="title">R.R. Prevenção em Saúde</h1>
+              <p className="subtitle">Presença Facial</p>
+            </div>
+          </div>
 
-    <div className="header-actions">
-      <div className="models-status">
-        Status: {loadingModels ? "carregando..." : faceapiLoaded ? "Online" : "Offline"}
-      </div>
+          <div className="header-actions">
+            <div className="models-status">
+              Status: {loadingModels ? "carregando..." : faceapiLoaded ? "Online" : "Offline"}
+            </div>
 
-      {/* Botão de login só aparece se o usuário não estiver logado e se você quiser exibir em outras telas */}
-      {user && (
-        <>
-          <div className="user-pill">{user.name}</div>
-          <button className="btn" onClick={handleLogout}>Sair</button>
-        </>
-      )}
-    </div>
-  </div>
-</header>
-      
+            {user && (
+              <>
+                <div className="user-pill">{user.name}</div>
+                <button className="btn" onClick={handleLogout}>Sair</button>
+              </>
+            )}
+          </div>
+        </div>
+      </header>
 
       <main className="app-main">
         {!user ? (
@@ -541,7 +612,7 @@ export default function App() {
               {route === "register" && (
                 <div className="card">
                   <h2>✚ Registrar Funcionário</h2>
-                    <br></br>
+                  <br></br>
                   <div className="form-row">
                     <label>Empresa</label>
                     <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
@@ -585,23 +656,20 @@ export default function App() {
 
               {route === "attendance" && (
                 <div className="card">
-                  <h2>✅ Tela de Presença</h2>
-                  <p className="muted">Empresa: {companies.find((c) => String(c.id) === String(selectedCompany))?.name || "nenhuma selecionada"}</p>
-                      <br></br>
-                  <div className="row gap">
-                    <div>
-                      <button className="btn green" onClick={openCamera}>Abrir Câmera</button>
-                      <button className="btn purple" onClick={startAttendanceLoop}>Iniciar Reconhecimento</button>
-                      <button className="btn red" onClick={stopAttendanceLoop}>Parar</button>
-                      <button className="btn yellow" onClick={switchFacing}>Trocar Câmera</button>
-                    </div>
-                  </div>
-
-                  <div className="video-wrapper">
-                    <video ref={videoRef} className="video" autoPlay muted playsInline />
-                  </div>
-
-                  <p className="status" role="status">Status: {statusMsg}</p>
+                  {/* Modified attendance summary: only one button initially */}
+                  {!cameraFullscreen ? (
+                    <>
+                      <h2>✅ Tela de Presença</h2>
+                      <p className="muted">Empresa: Bela Tintas</p>
+                      <br />
+                      <div className="form-row">
+                        <button className="btn primary" onClick={() => { setCameraFullscreen(true); openCamera(); }}>Abrir Câmera</button>
+                      </div>
+                    </>
+                  ) : (
+                    // fullscreen camera mode will be rendered below outside of .card
+                    <div style={{ minHeight: 120 }} />
+                  )}
                 </div>
               )}
 
@@ -633,16 +701,42 @@ export default function App() {
         )}
       </main>
 
+      {/* Fullscreen camera view overlay (when cameraFullscreen = true) */}
+      {user && cameraFullscreen && (
+        <div className="camera-fullscreen">
+          <video ref={videoRef} className="video-fullscreen" autoPlay muted playsInline />
+          <canvas ref={canvasRef} className="overlay-canvas" />
+
+          {/* floating controls at bottom */}
+          <div className="camera-controls">
+            <button className="btn green" onClick={() => startAttendanceLoop()}>Iniciar Reconhecimento</button>
+            <button className="btn red" onClick={() => { stopAttendanceLoop(); }}>Parar</button>
+            <button className="btn yellow" onClick={() => { switchFacing(); stopAttendanceLoop(); setTimeout(() => openCamera(), 400); }}>Trocar Câmera</button>
+            <button className="btn" onClick={() => { stopAttendanceLoop(); stopCamera(); setCameraFullscreen(false); }}>Fechar</button>
+          </div>
+
+          {/* live recent matches box */}
+          <div className="recent-matches">
+            <h4>Últimos Matches</h4>
+            <ul>
+              {recentMatches.map((m) => (
+                <li key={m.id + String(m.timestamp)}>{m.name}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       {/* BOTTOM NAV (agora visível em todas as larguras) */}
       {user && (
         <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
           <button className={`nav-item ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}><span style={{ fontSize: "28px" }}>💻</span></button>
           <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}><span style={{ color: "#ffffffff", fontSize: "26px" }}>🧑‍💼</span></button>
-          <button className={`nav-item ${route === "attendance" ? "active" : ""}`} onClick={() => setRoute("attendance")}><span style={{ color: "#ffffffff", fontSize: "26px" }}>✋</span></button>
+          <button className={`nav-item ${route === "attendance" ? "active" : ""}`} onClick={() => { setRoute("attendance"); setCameraFullscreen(false); }}><span style={{ color: "#ffffffff", fontSize: "26px" }}>✋</span></button>
           <button className={`nav-item ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}><span style={{ color: "#ffffffff", fontSize: "26px" }}>📋</span></button>
         </div>
       )}
-
     </div>
   );
 }
+

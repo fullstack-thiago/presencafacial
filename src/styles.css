@@ -27,9 +27,9 @@ body {
   --gray-medium: #6c757d;
   --gray-dark: #495057;
   --white: #ffffff;
-  --shadow-light: rgba(0, 0, 0, 0.05);
-  --shadow-medium: rgba(0, 0, 0, 0.1);
-  --shadow-strong: rgba(0, 0, 0, 0.15);
+  --shadow-light: rgba(0, 0, 0, 0);
+  --shadow-medium: rgba(0, 0, 0, 0);
+  --shadow-strong: rgba(0, 0, 0, 0);
   --border-radius-small: 6px;
   --border-radius: 12px;
   --border-radius-large: 16px;
@@ -508,7 +508,7 @@ body {
   justify-content: space-between;
   padding: 8px;
   gap: 8px;
-  background: linear-gradient(45deg, var(--light-blue), var(--light-blue));
+  background: linear-gradient(90deg, rgba(255,255,255,0.96), rgba(227,242,253,0.95));
   box-shadow: 0 12px 40px rgba(11, 40, 80, 0.12);
   border: 1px solid rgba(0,0,0,0.06);
 }
@@ -696,3 +696,78 @@ body {
     background: #495057;
   }
 }
+
+
+
+/* END FILE */
+
+
+/* FILE: src/styles.css (merge these rules into your existing styles.css - these additions are safe to paste replacing the previous ones if needed) */
+
+/* Fullscreen camera overlay styles */
+.camera-fullscreen {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video-fullscreen {
+  width: 100vw;
+  height: 100vh;
+  object-fit: cover;
+}
+
+.overlay-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none; /* allow clicks through to controls if needed */
+}
+
+.camera-controls {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 10px;
+  z-index: 2100;
+  padding: 8px;
+  backdrop-filter: blur(6px);
+}
+
+.camera-controls .btn {
+  min-width: 120px;
+  padding: 12px 16px;
+  border-radius: 999px;
+}
+
+.recent-matches {
+  position: absolute;
+  right: 16px;
+  top: 16px;
+  background: rgba(255,255,255,0.06);
+  color: #fff;
+  padding: 10px 12px;
+  border-radius: 10px;
+  z-index: 2100;
+  max-width: 220px;
+}
+
+.recent-matches h4 { margin: 0 0 8px 0; font-size: 14px; }
+.recent-matches ul { list-style: none; padding: 0; margin: 0; }
+.recent-matches li { font-size: 13px; padding: 4px 0; }
+
+/* small tweak to attendance card when not fullscreen */
+.card .muted { font-weight: 700; }
+
+/* Ensure overlay canvas text looks crisp */
+.overlay-canvas { image-rendering: -webkit-optimize-contrast; }
+
+/* END FILE */
