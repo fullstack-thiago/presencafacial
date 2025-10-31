@@ -162,6 +162,21 @@ body {
 }
 
 /* DEFAULT PRIMARY STYLE */
+.btn.primary,
+.btn.green,
+.btn.yellow,
+.btn.indigo,
+.btn.purple,
+.btn.red,
+.nav-btn{
+  background: linear-gradient(45deg, var(--accent-blue), var(--accent-blue));
+  color: var(--white);
+  box-shadow: 0 4px 12px rgba(0, 123, 255, 0.3);
+}
+
+.nav-item {
+  background: linear-gradient(45deg, var(--light-blue), var(--light-blue));
+}
 
 .btn.primary:hover,
 .btn.green:hover,
