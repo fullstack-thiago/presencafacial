@@ -214,6 +214,22 @@ export default function App() {
       await videoRef.current.play().catch(() => {});
       streamRef.current = s;
       setStatusMsg("Câmera aberta");
+
+      // resize canvas to match video using devicePixelRatio for crispness
+      setTimeout(() => {
+        const canvas = canvasRef.current;
+        const v = videoRef.current;
+        if (canvas && v) {
+          const ratio = window.devicePixelRatio || 1;
+          canvas.width = (v.videoWidth || v.clientWidth) * ratio;
+          canvas.height = (v.videoHeight || v.clientHeight) * ratio;
+          canvas.style.width = "100vw";
+          canvas.style.height = "100vh";
+          const ctx = canvas.getContext('2d');
+          if (ctx) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        }
+      }, 400);
+
     } catch (err) {
       console.error("Erro abrir câmera", err);
       setStatusMsg("Erro ao abrir câmera: " + String(err));
@@ -378,25 +394,12 @@ export default function App() {
     // adjust interval for mobile to save CPU/battery
     const intervalMs = (typeof window !== "undefined" && window.innerWidth <= 540) ? 4000 : DETECTION_INTERVAL_MS;
 
-    // prepare canvas size
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-
-    function resizeCanvas() {
-      if (!canvas || !video) return;
-      canvas.width = video.videoWidth || video.clientWidth;
-      canvas.height = video.videoHeight || video.clientHeight;
-    }
-
     // detection loop
     attendanceInterval.current = setInterval(async () => {
       if (isProcessingRef.current) return; // avoid overlapping
       isProcessingRef.current = true;
       try {
         if (!videoRef.current || videoRef.current.paused || videoRef.current.ended) return;
-
-        // ensure canvas size
-        resizeCanvas();
 
         const options = new faceapi.TinyFaceDetectorOptions();
         // detect all faces in frame (to support multiple people)
@@ -405,11 +408,11 @@ export default function App() {
           .withFaceLandmarks()
           .withFaceDescriptors();
 
+        const canvas = canvasRef.current;
         const ctx = canvas ? canvas.getContext('2d') : null;
-        if (ctx) {
+        if (ctx && canvas) {
+          // clear canvas each frame
           ctx.clearRect(0, 0, canvas.width, canvas.height);
-          // optional: semi-transparent dark layer
-          // ctx.fillStyle = 'rgba(0,0,0,0.0)'; ctx.fillRect(0,0,canvas.width,canvas.height);
         }
 
         if (!detections || detections.length === 0) {
@@ -425,20 +428,24 @@ export default function App() {
           // draw box
           if (ctx) {
             const box = det.detection.box;
-            ctx.lineWidth = 3;
+            ctx.lineWidth = 4;
             ctx.strokeStyle = 'rgba(0, 190, 120, 0.9)';
             ctx.strokeRect(box.x, box.y, box.width, box.height);
 
             // draw name (only name requested)
             const nameText = (label !== 'unknown') ? (idNameMap[label] || label) : 'Desconhecido';
-            ctx.font = '18px Inter, Arial';
+            const fontSize = Math.max(14, Math.round((box.width || 80) / 12));
+            ctx.font = `${fontSize}px Inter, Arial`;
+
+            // background rectangle for text
+            const padding = 8;
+            const textWidth = ctx.measureText(nameText).width + padding * 2;
+            const textHeight = fontSize + 8;
+
             ctx.fillStyle = 'rgba(0, 190, 120, 0.95)';
-            const textWidth = ctx.measureText(nameText).width + 12;
-            const textHeight = 26;
-            // background for text
-            ctx.fillRect(box.x, box.y - textHeight - 6, textWidth, textHeight);
+            ctx.fillRect(box.x, Math.max(0, box.y - textHeight - 6), textWidth, textHeight);
             ctx.fillStyle = '#fff';
-            ctx.fillText(nameText, box.x + 6, box.y - 8);
+            ctx.fillText(nameText, box.x + padding, Math.max(0, box.y - 10));
           }
 
           if (label !== 'unknown') {
@@ -667,7 +674,7 @@ export default function App() {
                       </div>
                     </>
                   ) : (
-                    // fullscreen camera mode will be rendered below outside of .card
+                    // placeholder when fullscreen active
                     <div style={{ minHeight: 120 }} />
                   )}
                 </div>
@@ -707,22 +714,24 @@ export default function App() {
           <video ref={videoRef} className="video-fullscreen" autoPlay muted playsInline />
           <canvas ref={canvasRef} className="overlay-canvas" />
 
-          {/* floating controls at bottom */}
-          <div className="camera-controls">
-            <button className="btn green" onClick={() => startAttendanceLoop()}>Iniciar Reconhecimento</button>
-            <button className="btn red" onClick={() => { stopAttendanceLoop(); }}>Parar</button>
-            <button className="btn yellow" onClick={() => { switchFacing(); stopAttendanceLoop(); setTimeout(() => openCamera(), 400); }}>Trocar Câmera</button>
-            <button className="btn" onClick={() => { stopAttendanceLoop(); stopCamera(); setCameraFullscreen(false); }}>Fechar</button>
-          </div>
+          {/* close button top-right (icon) */}
+          <button className="camera-close" aria-label="Fechar" onClick={() => { stopAttendanceLoop(); stopCamera(); setCameraFullscreen(false); }}>✖</button>
 
-          {/* live recent matches box */}
-          <div className="recent-matches">
-            <h4>Últimos Matches</h4>
+          {/* recent matches top-left */}
+          <div className="recent-matches left">
+            <h4>Últimos</h4>
             <ul>
               {recentMatches.map((m) => (
                 <li key={m.id + String(m.timestamp)}>{m.name}</li>
               ))}
             </ul>
+          </div>
+
+          {/* floating controls at bottom center with icons instead of text */}
+          <div className="camera-controls centered">
+            <button className="btn icon-btn" onClick={() => startAttendanceLoop()} aria-label="Iniciar">▶</button>
+            <button className="btn icon-btn" onClick={() => { stopAttendanceLoop(); }} aria-label="Parar">⏹</button>
+            <button className="btn icon-btn" onClick={() => { switchFacing(); stopAttendanceLoop(); setTimeout(() => openCamera(), 400); }} aria-label="Trocar">🔁</button>
           </div>
         </div>
       )}
@@ -739,4 +748,6 @@ export default function App() {
     </div>
   );
 }
+
+
 

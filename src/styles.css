@@ -508,7 +508,7 @@ body {
   justify-content: space-between;
   padding: 8px;
   gap: 8px;
-  background: linear-gradient(90deg, rgba(255,255,255,0.96), rgba(227,242,253,0.95));
+  background: linear-gradient(45deg, var(--light-blue), var(--light-blue));
   box-shadow: 0 12px 40px rgba(11, 40, 80, 0.12);
   border: 1px solid rgba(0,0,0,0.06);
 }
@@ -698,11 +698,7 @@ body {
 }
 
 
-
-/* END FILE */
-
-
-/* FILE: src/styles.css (merge these rules into your existing styles.css - these additions are safe to paste replacing the previous ones if needed) */
+/* FILE: src/styles.css - ADDITIONS/MODIFICATIONS for responsive fullscreen camera and layout */
 
 /* Fullscreen camera overlay styles */
 .camera-fullscreen {
@@ -713,12 +709,17 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
 }
 
 .video-fullscreen {
+  position: absolute;
+  left: 0;
+  top: 0;
   width: 100vw;
   height: 100vh;
   object-fit: cover;
+  z-index: 2001;
 }
 
 .overlay-canvas {
@@ -728,46 +729,97 @@ body {
   width: 100vw;
   height: 100vh;
   pointer-events: none; /* allow clicks through to controls if needed */
+  z-index: 2002;
 }
 
-.camera-controls {
+/* close button top-right */
+.camera-close {
   position: absolute;
-  bottom: 18px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  gap: 10px;
+  right: 12px;
+  top: 12px;
   z-index: 2100;
-  padding: 8px;
-  backdrop-filter: blur(6px);
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  border: none;
+  padding: 10px 12px;
+  border-radius: 50%;
+  font-size: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.camera-controls .btn {
-  min-width: 120px;
-  padding: 12px 16px;
-  border-radius: 999px;
-}
+.camera-close:active { transform: scale(0.98); }
 
-.recent-matches {
+/* recent matches top-left */
+.recent-matches.left {
   position: absolute;
-  right: 16px;
-  top: 16px;
+  left: 12px;
+  top: 12px;
   background: rgba(255,255,255,0.06);
   color: #fff;
   padding: 10px 12px;
   border-radius: 10px;
   z-index: 2100;
-  max-width: 220px;
+  max-width: 44vw;
+  min-width: 140px;
 }
 
-.recent-matches h4 { margin: 0 0 8px 0; font-size: 14px; }
-.recent-matches ul { list-style: none; padding: 0; margin: 0; }
-.recent-matches li { font-size: 13px; padding: 4px 0; }
+.recent-matches.left h4 { margin: 0 0 8px 0; font-size: 14px; }
+.recent-matches.left ul { list-style: none; padding: 0; margin: 0; max-height: 40vh; overflow: auto; }
+.recent-matches.left li { font-size: 13px; padding: 4px 0; color: #fff; }
+
+/* floating controls at bottom center */
+.camera-controls.centered {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  z-index: 2100;
+  padding: 8px;
+  backdrop-filter: blur(6px);
+}
+
+.camera-controls .btn.icon-btn {
+  min-width: 62px;
+  min-height: 62px;
+  padding: 8px;
+  border-radius: 50%;
+  font-size: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ensure buttons are big enough on mobile and wrap if needed */
+@media (max-width: 540px) {
+  .camera-controls.centered {
+    gap: 10px;
+    bottom: 12px;
+    padding: 6px;
+  }
+  .camera-controls .btn.icon-btn {
+    min-width: 54px;
+    min-height: 54px;
+    font-size: 20px;
+  }
+  .recent-matches.left {
+    max-width: 60vw;
+    left: 8px;
+    top: 8px;
+    padding: 8px;
+  }
+  .camera-close { right: 8px; top: 8px; padding: 8px; }
+}
+
+/* ensure canvas text is crisp */
+.overlay-canvas { image-rendering: -webkit-optimize-contrast; }
 
 /* small tweak to attendance card when not fullscreen */
 .card .muted { font-weight: 700; }
 
-/* Ensure overlay canvas text looks crisp */
-.overlay-canvas { image-rendering: -webkit-optimize-contrast; }
+/* keep other styles intact - these are additions only */
 
-/* END FILE */
+/* END OF FILE */
