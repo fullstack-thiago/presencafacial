@@ -208,63 +208,88 @@ export default function App() {
 
   // ---------- camera helpers ----------
   async function openCamera() {
-    try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        setStatusMsg("getUserMedia não suportado neste navegador");
-        return;
-      }
-
-      // stop existing stream safely
-      if (streamRef.current) {
-        try {
-          streamRef.current.getTracks().forEach((t) => t.stop());
-        } catch (e) {}
-        streamRef.current = null;
-        if (videoRef.current) videoRef.current.srcObject = null;
-      }
-
-      const constraints = { video: { facingMode } };
-      const s = await navigator.mediaDevices.getUserMedia(constraints);
-
-      if (!videoRef.current) {
-        s.getTracks().forEach((t) => t.stop());
-        setStatusMsg("Vídeo não disponível");
-        return;
-      }
-
-      videoRef.current.srcObject = s;
-      await videoRef.current.play().catch(() => {});
-      streamRef.current = s;
-      setStatusMsg("Câmera aberta");
-
-      // resize canvas to match video using devicePixelRatio for crispness
-      setTimeout(() => {
-        const canvas = canvasRef.current;
-        const v = videoRef.current;
-        if (canvas && v) {
-          const ratio = window.devicePixelRatio || 1;
-          canvas.width = (v.videoWidth || v.clientWidth) * ratio;
-          canvas.height = (v.videoHeight || v.clientHeight) * ratio;
-          canvas.style.width = "100vw";
-          canvas.style.height = "100vh";
-          const ctx = canvas.getContext('2d');
-          if (ctx) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-        }
-      }, 400);
-
-      // auto-start recognition when camera opens and fullscreen active + toggle enabled
-      if (cameraFullscreen && autoRecognitionEnabled) {
-        if (!selectedCompany) {
-          setStatusMsg('Selecione a empresa antes de abrir a câmera');
-        } else {
-          await prepareFaceMatcherAndStart();
-        }
-      }
-    } catch (err) {
-      console.error("Erro abrir câmera", err);
-      setStatusMsg("Erro ao abrir câmera: " + String(err));
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatusMsg("getUserMedia não suportado neste navegador");
+      return;
     }
+
+    // stop existing stream safely
+    if (streamRef.current) {
+      try {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      } catch (e) {}
+      streamRef.current = null;
+      if (videoRef.current) videoRef.current.srcObject = null;
+    }
+
+    const constraints = { video: { facingMode } };
+    const s = await navigator.mediaDevices.getUserMedia(constraints);
+
+    if (!videoRef.current) {
+      s.getTracks().forEach((t) => t.stop());
+      setStatusMsg("Vídeo não disponível");
+      return;
+    }
+
+    videoRef.current.srcObject = s;
+    streamRef.current = s;
+
+    // Play video and wait until it has actual frames
+    await videoRef.current.play().catch(() => {});
+    await new Promise((resolve) => {
+      let waited = 0;
+      const check = () => {
+        const v = videoRef.current;
+        if (!v) return resolve();
+        if (v.readyState >= 2 && (v.videoWidth || v.clientWidth) > 0) return resolve();
+        waited += 100;
+        if (waited > 1500) return resolve();
+        setTimeout(check, 100);
+      };
+      check();
+    });
+
+    setStatusMsg("Câmera aberta");
+
+    // resize canvas to match video using devicePixelRatio for crispness
+    setTimeout(() => {
+      const canvas = canvasRef.current;
+      const v = videoRef.current;
+      if (canvas && v) {
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = (v.videoWidth || v.clientWidth) * ratio;
+        canvas.height = (v.videoHeight || v.clientHeight) * ratio;
+        canvas.style.width = "100vw";
+        canvas.style.height = "100vh";
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      }
+    }, 400);
+
+    // auto-start recognition when camera opens and fullscreen active + toggle enabled
+    if (cameraFullscreen && autoRecognitionEnabled) {
+      console.log('openCamera: faceapiLoaded=', faceapiLoaded, 'selectedCompany=', selectedCompany, 'stream ok=', !!streamRef.current);
+      if (!selectedCompany) {
+        setStatusMsg('Selecione a empresa antes de abrir a câmera');
+      } else if (!faceapiLoaded) {
+        setStatusMsg('Aguarde modelos carregarem antes de iniciar o reconhecimento');
+        console.warn('prepareFaceMatcherAndStart postponed: modelos não prontos');
+      } else {
+        try {
+          await prepareFaceMatcherAndStart();
+          console.log('Reconhecimento automático iniciado');
+        } catch (err) {
+          console.error('Erro ao iniciar reconhecimento automático', err);
+          setStatusMsg('Erro iniciando reconhecimento: ' + String(err));
+        }
+      }
+    }
+  } catch (err) {
+    console.error("Erro abrir câmera", err);
+    setStatusMsg("Erro ao abrir câmera: " + String(err));
   }
+}
 
   function stopCamera() {
     if (streamRef.current) {
