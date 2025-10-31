@@ -35,7 +35,8 @@ export default function App() {
   const [selectedCompany, setSelectedCompany] = useState(null); // keep as string or uuid
 
   // Camera / attendance
-  const attendanceInterval = useRef(null);
+  const attendanceInterval = useRef(null); // not used but left for backward compatibility
+  const recognitionRaf = useRef(null);
   const videoRef = useRef(null);
   const canvasRef = useRef(null); // overlay canvas
   const streamRef = useRef(null); // ← usar ref para stream para cleanup seguro
@@ -58,9 +59,9 @@ export default function App() {
   // Fullscreen camera app mode
   const [cameraFullscreen, setCameraFullscreen] = useState(false);
 
-  // CONFIG
+  // CONFIG (made more aggressive for faster detection)
   const DEDUP_MS = 5 * 60 * 1000; // 5 minutos para evitar duplicação de presença
-  const DETECTION_INTERVAL_MS = 2500; // intervalo padrão (desktop)
+  const DETECTION_INTERVAL_MS = 800; // intervalo padrão (mais rápido)
   const MATCH_THRESHOLD = 0.55; // face matcher threshold (ajustável)
 
   // lastSeen local to avoid hammering DB when same person is in frame repeatedly
@@ -69,6 +70,10 @@ export default function App() {
   // guards
   const recognitionRunningRef = useRef(false);
   const isProcessingRef = useRef(false);
+
+  // small cached matcher & map so detector isn't rebuilt each frame
+  const faceMatcherRef = useRef(null);
+  const idNameMapRef = useRef({});
 
   // ---------- load face-api dynamically and models ----------
   useEffect(() => {
@@ -99,7 +104,7 @@ export default function App() {
 
     return () => {
       mounted = false;
-      stopAttendanceLoop();
+      stopRecognitionLoop();
       stopCamera();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -177,7 +182,7 @@ export default function App() {
   }
 
   function handleLogout() {
-    stopAttendanceLoop();
+    stopRecognitionLoop();
     stopCamera();
     setUser(null);
     setRoute("login");
@@ -230,6 +235,16 @@ export default function App() {
         }
       }, 400);
 
+      // auto-start recognition when camera opens and fullscreen active
+      if (cameraFullscreen) {
+        // ensure employees loaded
+        if (!selectedCompany) {
+          setStatusMsg('Selecione a empresa antes de abrir a câmera');
+        } else {
+          // prepare matcher and start
+          await prepareFaceMatcherAndStart();
+        }
+      }
     } catch (err) {
       console.error("Erro abrir câmera", err);
       setStatusMsg("Erro ao abrir câmera: " + String(err));
@@ -263,7 +278,7 @@ export default function App() {
       return null;
     }
     try {
-      const options = new faceapi.TinyFaceDetectorOptions();
+      const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 });
       const detection = await faceapi
         .detectSingleFace(videoRef.current, options)
         .withFaceLandmarks()
@@ -336,73 +351,65 @@ export default function App() {
     }
   }
 
-  // ---------- attendance loop with overlay drawing ----------
-  async function startAttendanceLoop() {
+  // ---------- recognition setup and RAF loop (automatic when camera opens) ----------
+  async function prepareFaceMatcherAndStart() {
     if (!selectedCompany) {
-      setStatusMsg("Selecione uma empresa primeiro");
+      setStatusMsg('Selecione uma empresa');
       return;
     }
     if (!faceapiLoaded || !faceapi) {
-      setStatusMsg("Modelos não carregados ainda");
-      return;
-    }
-    if (!videoRef.current) {
-      setStatusMsg("Vídeo não disponível");
+      setStatusMsg('Modelos não carregados');
       return;
     }
 
-    if (recognitionRunningRef.current) {
-      setStatusMsg('Reconhecimento já em execução');
-      return;
-    }
-
-    // fetch employees of the company once
+    // fetch employees once
     const { data: emps, error: e } = await supabase.from("employees").select("*").eq("company_id", String(selectedCompany));
     if (e) {
       console.error(e);
-      setStatusMsg("Erro buscando funcionários");
+      setStatusMsg('Erro buscando funcionários');
       return;
     }
     if (!emps?.length) {
-      setStatusMsg("Nenhum funcionário cadastrado");
+      setStatusMsg('Nenhum funcionário cadastrado');
       return;
     }
 
     setEmployees(emps);
 
-    // map id -> name for overlay labels
-    const idNameMap = {};
-    emps.forEach((it) => { idNameMap[String(it.id)] = it.name; });
-
-    // build labeled descriptors (converted to Float32Array)
+    // build map and matcher
+    const idMap = {};
     const labeled = emps.map((e2) => {
+      idMap[String(e2.id)] = e2.name;
       const descs = (e2.descriptors || []).map((d) => new Float32Array(d));
-      // label use employee id string (more robust than name)
       return new faceapi.LabeledFaceDescriptors(String(e2.id), descs);
     });
 
-    const faceMatcher = new faceapi.FaceMatcher(labeled, MATCH_THRESHOLD);
-    setStatusMsg("🔄 Reconhecimento contínuo iniciado...");
+    idNameMapRef.current = idMap;
+    faceMatcherRef.current = new faceapi.FaceMatcher(labeled, MATCH_THRESHOLD);
+
+    // start RAF loop
+    startRecognitionLoop();
+  }
+
+  function startRecognitionLoop() {
+    if (recognitionRunningRef.current) return;
     recognitionRunningRef.current = true;
+    setStatusMsg('🔄 Reconhecimento automático iniciado');
 
-    // clear previous interval
-    if (attendanceInterval.current) {
-      clearInterval(attendanceInterval.current);
-      attendanceInterval.current = null;
-    }
+    let lastRun = 0;
 
-    // adjust interval for mobile to save CPU/battery
-    const intervalMs = (typeof window !== "undefined" && window.innerWidth <= 540) ? 4000 : DETECTION_INTERVAL_MS;
+    const loop = async (timestamp) => {
+      recognitionRaf.current = requestAnimationFrame(loop);
+      if (!recognitionRunningRef.current) return;
+      if (!videoRef.current || videoRef.current.paused || videoRef.current.ended) return;
+      if (timestamp - lastRun < (window.innerWidth <= 540 ? DETECTION_INTERVAL_MS - 200 : DETECTION_INTERVAL_MS)) return; // throttle
+      lastRun = timestamp;
 
-    // detection loop
-    attendanceInterval.current = setInterval(async () => {
-      if (isProcessingRef.current) return; // avoid overlapping
+      if (isProcessingRef.current) return;
       isProcessingRef.current = true;
-      try {
-        if (!videoRef.current || videoRef.current.paused || videoRef.current.ended) return;
 
-        const options = new faceapi.TinyFaceDetectorOptions();
-        // detect all faces in frame (to support multiple people)
+      try {
+        const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 });
         const detections = await faceapi
           .detectAllFaces(videoRef.current, options)
           .withFaceLandmarks()
@@ -410,38 +417,32 @@ export default function App() {
 
         const canvas = canvasRef.current;
         const ctx = canvas ? canvas.getContext('2d') : null;
-        if (ctx && canvas) {
-          // clear canvas each frame
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-        }
+        if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         if (!detections || detections.length === 0) {
-          // nothing detected
+          isProcessingRef.current = false;
           return;
         }
 
-        // iterate detections
+        const matcher = faceMatcherRef.current;
+        const idMap = idNameMapRef.current;
+
         for (const det of detections) {
-          const best = faceMatcher.findBestMatch(det.descriptor);
+          const best = matcher.findBestMatch(det.descriptor);
           const label = best.label;
 
-          // draw box
           if (ctx) {
             const box = det.detection.box;
             ctx.lineWidth = 4;
-            ctx.strokeStyle = 'rgba(0, 190, 120, 0.9)';
+            ctx.strokeStyle = 'rgba(0, 190, 120, 0.95)';
             ctx.strokeRect(box.x, box.y, box.width, box.height);
 
-            // draw name (only name requested)
-            const nameText = (label !== 'unknown') ? (idNameMap[label] || label) : 'Desconhecido';
+            const nameText = (label !== 'unknown') ? (idMap[label] || label) : 'Desconhecido';
             const fontSize = Math.max(14, Math.round((box.width || 80) / 12));
             ctx.font = `${fontSize}px Inter, Arial`;
-
-            // background rectangle for text
             const padding = 8;
             const textWidth = ctx.measureText(nameText).width + padding * 2;
             const textHeight = fontSize + 8;
-
             ctx.fillStyle = 'rgba(0, 190, 120, 0.95)';
             ctx.fillRect(box.x, Math.max(0, box.y - textHeight - 6), textWidth, textHeight);
             ctx.fillStyle = '#fff';
@@ -449,18 +450,15 @@ export default function App() {
           }
 
           if (label !== 'unknown') {
-            const matchedEmployeeId = label; // string
-
-            // local dedup: check lastSeenRef
+            const matchedEmployeeId = label;
             const lastSeen = lastSeenRef.current[matchedEmployeeId];
             const now = Date.now();
             if (lastSeen && now - lastSeen < DEDUP_MS) {
-              // update recentMatches for UI
-              setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idNameMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
+              setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
               continue;
             }
 
-            // check DB last record for safety (server-side dedup still recommended)
+            // check DB last record
             const { data: last, error } = await supabase
               .from("attendances")
               .select("*")
@@ -475,47 +473,43 @@ export default function App() {
 
             const fiveMinutesAgo = new Date(Date.now() - DEDUP_MS);
             if (!last || !last.length || new Date(last[0].attended_at) < fiveMinutesAgo) {
-              // insert attendance
               const { error: insertErr } = await supabase.from("attendances").insert([
-                {
-                  company_id: String(selectedCompany),
-                  employee_id: matchedEmployeeId,
-                  confidence: best.distance,
-                },
+                { company_id: String(selectedCompany), employee_id: matchedEmployeeId, confidence: best.distance },
               ]);
               if (insertErr) {
                 console.error("Erro inserindo attendance", insertErr);
                 setStatusMsg("Erro ao salvar presença");
               } else {
                 lastSeenRef.current[matchedEmployeeId] = now;
-                setStatusMsg(`✅ Presença registrada: ${idNameMap[matchedEmployeeId] || matchedEmployeeId}`);
-                // update recent matches
-                setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idNameMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
-                // opcional: atualizar histórico local
+                setStatusMsg(`✅ Presença registrada: ${idMap[matchedEmployeeId] || matchedEmployeeId}`);
+                setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
                 fetchAttendances({ company_id: selectedCompany });
               }
             } else {
               lastSeenRef.current[matchedEmployeeId] = now;
-              setStatusMsg(`⚠️ ${idNameMap[matchedEmployeeId] || matchedEmployeeId} já registrado nos últimos ${Math.round(DEDUP_MS / 60000)} min`);
+              setStatusMsg(`⚠️ ${idMap[matchedEmployeeId] || matchedEmployeeId} já registrado nos últimos ${Math.round(DEDUP_MS / 60000)} min`);
             }
           }
         }
+
       } catch (err) {
-        console.error("Erro no loop de reconhecimento", err);
+        console.error('Erro no loop de reconhecimento', err);
       } finally {
         isProcessingRef.current = false;
       }
-    }, intervalMs);
+    };
+
+    recognitionRaf.current = requestAnimationFrame(loop);
   }
 
-  function stopAttendanceLoop() {
-    if (attendanceInterval.current) {
-      clearInterval(attendanceInterval.current);
-      attendanceInterval.current = null;
+  function stopRecognitionLoop() {
+    if (recognitionRaf.current) {
+      cancelAnimationFrame(recognitionRaf.current);
+      recognitionRaf.current = null;
     }
     recognitionRunningRef.current = false;
     isProcessingRef.current = false;
-    setStatusMsg("⏹️ Reconhecimento parado");
+    setStatusMsg('⏹️ Reconhecimento parado');
   }
 
   // ---------- export XLSX ----------
@@ -715,11 +709,11 @@ export default function App() {
           <canvas ref={canvasRef} className="overlay-canvas" />
 
           {/* close button top-right (icon) */}
-          <button className="camera-close" aria-label="Fechar" onClick={() => { stopAttendanceLoop(); stopCamera(); setCameraFullscreen(false); }}>✖</button>
+          <button className="camera-close" aria-label="Fechar" onClick={() => { stopRecognitionLoop(); stopCamera(); setCameraFullscreen(false); }}>✖</button>
 
           {/* recent matches top-left */}
           <div className="recent-matches left">
-            <h4>Últimos</h4>
+            <h4>Últimos registros</h4>
             <ul>
               {recentMatches.map((m) => (
                 <li key={m.id + String(m.timestamp)}>{m.name}</li>
@@ -727,11 +721,9 @@ export default function App() {
             </ul>
           </div>
 
-          {/* floating controls at bottom center with icons instead of text */}
+          {/* floating controls at bottom center: only switch camera remains (icon) */}
           <div className="camera-controls centered">
-            <button className="btn icon-btn" onClick={() => startAttendanceLoop()} aria-label="Iniciar">▶</button>
-            <button className="btn icon-btn" onClick={() => { stopAttendanceLoop(); }} aria-label="Parar">⏹</button>
-            <button className="btn icon-btn" onClick={() => { switchFacing(); stopAttendanceLoop(); setTimeout(() => openCamera(), 400); }} aria-label="Trocar">🔁</button>
+            <button className="btn icon-btn" onClick={() => { switchFacing(); stopRecognitionLoop(); setTimeout(() => openCamera(), 400); }} aria-label="Trocar">🔁</button>
           </div>
         </div>
       )}

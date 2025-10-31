@@ -698,7 +698,7 @@ body {
 }
 
 
-/* FILE: src/styles.css - ADDITIONS/MODIFICATIONS for responsive fullscreen camera and layout */
+/* FILE: src/styles.css - UPDATES for automated recognition and responsive controls */
 
 /* Fullscreen camera overlay styles */
 .camera-fullscreen {
@@ -738,8 +738,8 @@ body {
   right: 12px;
   top: 12px;
   z-index: 2100;
-  background: rgba(0,0,0,0.45);
-  color: #fff;
+  background: rgba(0, 0, 0, 0);
+  color: #ffffff;
   border: none;
   padding: 10px 12px;
   border-radius: 50%;
@@ -757,7 +757,7 @@ body {
   left: 12px;
   top: 12px;
   background: rgba(255,255,255,0.06);
-  color: #fff;
+  color: #3cff00;
   padding: 10px 12px;
   border-radius: 10px;
   z-index: 2100;
@@ -793,7 +793,6 @@ body {
   justify-content: center;
 }
 
-/* ensure buttons are big enough on mobile and wrap if needed */
 @media (max-width: 540px) {
   .camera-controls.centered {
     gap: 10px;
