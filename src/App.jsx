@@ -696,6 +696,7 @@ export default function App() {
               )}
 
               {route === "attendance" && (
+                
                 <div className="card">
                   {/* Modified attendance summary: only one button initially */}
                   {!cameraFullscreen ? (
@@ -758,7 +759,7 @@ export default function App() {
 
           {/* recent matches top-left */}
           <div className="recent-matches left">
-            <h4>Últimos</h4>
+            <h4>Últimos registros</h4>
             <ul>
               {recentMatches.map((m) => (
                 <li key={m.id + String(m.timestamp)}>{m.name}</li>
