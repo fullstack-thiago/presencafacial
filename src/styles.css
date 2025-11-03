@@ -821,4 +821,24 @@ body {
 
 /* keep other styles intact - these are additions only */
 
+
+.btn-switch-camera.glass {
+  background: rgba(255, 255, 255, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  backdrop-filter: blur(8px);
+  color: white;
+  font-size: 1.8rem;
+  padding: 12px 16px;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.btn-switch-camera.glass:hover {
+  background: rgba(255, 255, 255, 0.35);
+  transform: scale(1.1) rotate(20deg);
+}
+
+
+
 /* END OF FILE */

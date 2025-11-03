@@ -799,8 +799,18 @@ function switchFacing() {
 
           {/* floating controls at bottom center: keep only switch camera */}
           <div className="camera-controls centered">
-            <button className="btn icon-btn" onClick={() => { switchFacing(); stopRecognitionLoop(); setTimeout(() => openCamera(), 400); }} aria-label="Trocar">🔁</button>
-          </div>
+  <button
+    className="btn-switch-camera glass"
+    onClick={() => {
+      switchFacing();
+      stopRecognitionLoop();
+      setTimeout(() => openCamera(), 400);
+    }}
+  >
+    🔁
+  </button>
+</div>
+
         </div>
       )}
 
