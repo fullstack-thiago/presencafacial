@@ -653,31 +653,47 @@ function switchFacing() {
             <section className="content">
               {route === "dashboard" && (
                 <div className="card">
-                  <h2>Dashboard</h2>
+                  <h2>Dashboard 💻</h2>
+                  <br></br>
                   <div className="row gap">
                     <div className="col">
                       <label className="label">🏢 - Empresa </label>
-                      <br></br>
+                      
                       <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
                         <option value="">-- selecione a empresa --</option>
                         {companies.map((c) => (
                           <option key={c.id} value={String(c.id)}>{c.name}</option>
                         ))}
+                        
                       </select>
-                    </div>
+                      
+                      <div style={{ marginTop: "15px", display: "flex", gap: "10px" }}>
+                        <button
+                          className="btn primary"
+                            onClick={() => {
+                              if (!selectedCompany) {
+                                alert("Selecione uma empresa antes de registrar presença");
+                                return;
+                              }
+                            setCameraFullscreen(true);
+                            openCamera();
+                            }}
+                        >
+                          Abrir Câmera
+                        </button>
 
-                    <button
-                      className="btn primary"
-                      onClick={() => {
-                        if (!selectedCompany) {
-                          alert("Selecione uma empresa antes de registrar presença");
-                          return;
-                        }
-                        setRoute("attendance");
-                      }}
-                    >
-                      Ir para Presença Facial
-                    </button>
+                        <button
+                          className="btn"
+                            onClick={() => {
+                              fetchAttendances({ company_id: selectedCompany });
+                                setRoute("history");
+                            }}
+                        >
+                          Ver Histórico
+                        </button>
+                      </div>
+
+                    </div>
 
 
                     <div className="col stats">
@@ -711,11 +727,6 @@ function switchFacing() {
                     <input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} />
                   </div>
 
-                  <div className="form-row">
-                    <label>Cargo</label>
-                    <input className="input" value={newRole} onChange={(e) => setNewRole(e.target.value)} />
-                  </div>
-
                   <div className="form-row actions">
                     <div className="btn-group">
                       <button className="btn green" onClick={openCamera}>Abrir Câmera</button>
@@ -736,39 +747,6 @@ function switchFacing() {
                   <div className="form-row">
                     <button className="btn primary" onClick={saveNewEmployee}>Salvar Funcionário</button>
                   </div>
-                </div>
-              )}
-
-              {route === "attendance" && (
-                <div className="card">
-                  {/* Modified attendance summary: only one button initially */}
-                  {!cameraFullscreen ? (
-                    <>
-                      <h2>✅ Tela de Presença</h2>
-                      <p className="muted">Empresa: {companies.find((c) => String(c.id) === String(selectedCompany))?.name || 'nenhuma selecionada'}</p>
-
-                      <div className="form-row">
-                        <label className="checkbox-label"><input type="checkbox" checked={autoRecognitionEnabled} onChange={(e) => setAutoRecognitionEnabled(e.target.checked)} /> Reconhecimento automático</label>
-                      </div>
-
-                      
-                      <div className="form-row">
-                        <button className="btn primary" onClick={() => { setCameraFullscreen(true); openCamera(); }}>Abrir Câmera</button>
-                      </div>
-                      <button
-                          className="btn"
-                          onClick={() => {
-                            fetchAttendances({ company_id: selectedCompany });
-                            setRoute("history");
-                          }}
-                        >
-                          Ver Histórico
-                        </button>
-                    </>
-                  ) : (
-                    // placeholder when fullscreen active
-                    <div style={{ minHeight: 120 }} />
-                  )}
                 </div>
               )}
 
@@ -831,7 +809,6 @@ function switchFacing() {
         <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
           <button className={`nav-item ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}><span style={{ fontSize: "28px" }}>💻</span></button>
           <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}><span style={{ color: "#ffffffff", fontSize: "26px" }}>🧑‍💼</span></button>
-          <button className={`nav-item ${route === "attendance" ? "active" : ""}`} onClick={() => { setRoute("attendance"); setCameraFullscreen(false); }}><span style={{ color: "#ffffffff", fontSize: "26px" }}>✋</span></button>
           <button className={`nav-item ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}><span style={{ color: "#ffffffff", fontSize: "26px" }}>📋</span></button>
         </div>
       )}
