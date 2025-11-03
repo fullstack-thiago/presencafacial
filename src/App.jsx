@@ -207,14 +207,15 @@ export default function App() {
   }
 
   // ---------- camera helpers ----------
-  async function openCamera() {
+  // Função para abrir a câmera com checagem de readiness
+async function openCamera() {
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setStatusMsg("getUserMedia não suportado neste navegador");
       return;
     }
 
-    // stop existing stream safely
+    // Fecha stream anterior, se existir
     if (streamRef.current) {
       try {
         streamRef.current.getTracks().forEach((t) => t.stop());
@@ -224,72 +225,101 @@ export default function App() {
     }
 
     const constraints = { video: { facingMode } };
-    const s = await navigator.mediaDevices.getUserMedia(constraints);
-
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
     if (!videoRef.current) {
-      s.getTracks().forEach((t) => t.stop());
+      stream.getTracks().forEach((t) => t.stop());
       setStatusMsg("Vídeo não disponível");
       return;
     }
 
-    videoRef.current.srcObject = s;
-    streamRef.current = s;
+    videoRef.current.srcObject = stream;
+    streamRef.current = stream;
 
-    // Play video and wait until it has actual frames
     await videoRef.current.play().catch(() => {});
-    await new Promise((resolve) => {
-      let waited = 0;
-      const check = () => {
-        const v = videoRef.current;
-        if (!v) return resolve();
-        if (v.readyState >= 2 && (v.videoWidth || v.clientWidth) > 0) return resolve();
-        waited += 100;
-        if (waited > 1500) return resolve();
-        setTimeout(check, 100);
-      };
-      check();
-    });
-
     setStatusMsg("Câmera aberta");
 
-    // resize canvas to match video using devicePixelRatio for crispness
-    setTimeout(() => {
-      const canvas = canvasRef.current;
-      const v = videoRef.current;
-      if (canvas && v) {
-        const ratio = window.devicePixelRatio || 1;
-        canvas.width = (v.videoWidth || v.clientWidth) * ratio;
-        canvas.height = (v.videoHeight || v.clientHeight) * ratio;
-        canvas.style.width = "100vw";
-        canvas.style.height = "100vh";
-        const ctx = canvas.getContext('2d');
-        if (ctx) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-      }
-    }, 400);
-
-    // auto-start recognition when camera opens and fullscreen active + toggle enabled
-    if (cameraFullscreen && autoRecognitionEnabled) {
-      console.log('openCamera: faceapiLoaded=', faceapiLoaded, 'selectedCompany=', selectedCompany, 'stream ok=', !!streamRef.current);
-      if (!selectedCompany) {
-        setStatusMsg('Selecione a empresa antes de abrir a câmera');
-      } else if (!faceapiLoaded) {
-        setStatusMsg('Aguarde modelos carregarem antes de iniciar o reconhecimento');
-        console.warn('prepareFaceMatcherAndStart postponed: modelos não prontos');
-      } else {
-        try {
-          await prepareFaceMatcherAndStart();
-          console.log('Reconhecimento automático iniciado');
-        } catch (err) {
-          console.error('Erro ao iniciar reconhecimento automático', err);
-          setStatusMsg('Erro iniciando reconhecimento: ' + String(err));
+    // Aguarda até o vídeo ter dimensões válidas
+    await new Promise((resolve) => {
+      const checkReady = () => {
+        const v = videoRef.current;
+        if (v && v.videoWidth > 0 && v.videoHeight > 0) {
+          console.log("📷 Vídeo pronto:", v.videoWidth, "x", v.videoHeight);
+          resolve();
+        } else {
+          setTimeout(checkReady, 100);
         }
+      };
+      checkReady();
+    });
+
+    // Ajuste o tamanho do canvas
+    setTimeout(() => {
+        const canvas = canvasRef.current;
+        const v = videoRef.current;
+        if (canvas && v) {
+          const ratio = window.devicePixelRatio || 1;
+          canvas.width = (v.videoWidth || v.clientWidth) * ratio;
+          canvas.height = (v.videoHeight || v.clientHeight) * ratio;
+          canvas.style.width = "100vw";
+          canvas.style.height = "100vh";
+          const ctx = canvas.getContext('2d');
+          if (ctx) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        }
+      }, 400);
+
+    // Inicia o reconhecimento automático (com delay leve para evitar corrida)
+    if (cameraFullscreen && autoRecognitionEnabled) {
+      console.log(
+        "openCamera: faceapiLoaded=",
+        faceapiLoaded,
+        "selectedCompany=",
+        selectedCompany,
+        "stream ok=",
+        !!streamRef.current
+      );
+
+      if (!selectedCompany) {
+        setStatusMsg("Selecione a empresa antes de abrir a câmera");
+        return;
       }
+      if (!faceapiLoaded) {
+        setStatusMsg("Aguarde carregamento dos modelos...");
+        return;
+      }
+
+      // Delay pequeno (meio segundo) para garantir que tudo esteja pronto
+      setTimeout(() => {
+        console.log("▶️ Reconhecimento automático iniciado");
+        prepareFaceMatcherAndStart();
+      }, 500);
     }
   } catch (err) {
-    console.error("Erro abrir câmera", err);
-    setStatusMsg("Erro ao abrir câmera: " + String(err));
+    console.error("Erro ao abrir câmera:", err);
+    setStatusMsg("Erro ao abrir câmera: " + err.message);
   }
 }
+
+// Alterna entre câmeras frontal e traseira
+function switchFacing() {
+  setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
+
+  // Fecha stream atual antes de reabrir
+  if (streamRef.current) {
+    try {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+    } catch (e) {
+      console.error("Erro ao parar stream:", e);
+    }
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+  }
+
+  // Reabre a câmera após pequeno atraso
+  setTimeout(() => {
+    openCamera().catch((e) => console.error("Erro ao reabrir câmera:", e));
+  }, 400);
+}
+
 
   function stopCamera() {
     if (streamRef.current) {
@@ -636,6 +666,20 @@ export default function App() {
                       </select>
                     </div>
 
+                    <button
+                      className="btn primary"
+                      onClick={() => {
+                        if (!selectedCompany) {
+                          alert("Selecione uma empresa antes de registrar presença");
+                          return;
+                        }
+                        setRoute("attendance");
+                      }}
+                    >
+                      Ir para Presença Facial
+                    </button>
+
+
                     <div className="col stats">
                       <div className="stat">
                         <div className="stat-value">{employees.length}</div>
@@ -696,7 +740,6 @@ export default function App() {
               )}
 
               {route === "attendance" && (
-                
                 <div className="card">
                   {/* Modified attendance summary: only one button initially */}
                   {!cameraFullscreen ? (
@@ -708,10 +751,19 @@ export default function App() {
                         <label className="checkbox-label"><input type="checkbox" checked={autoRecognitionEnabled} onChange={(e) => setAutoRecognitionEnabled(e.target.checked)} /> Reconhecimento automático</label>
                       </div>
 
-                      <br />
+                      
                       <div className="form-row">
                         <button className="btn primary" onClick={() => { setCameraFullscreen(true); openCamera(); }}>Abrir Câmera</button>
                       </div>
+                      <button
+                          className="btn"
+                          onClick={() => {
+                            fetchAttendances({ company_id: selectedCompany });
+                            setRoute("history");
+                          }}
+                        >
+                          Ver Histórico
+                        </button>
                     </>
                   ) : (
                     // placeholder when fullscreen active
@@ -787,5 +839,5 @@ export default function App() {
   );
 }
 
-/*f
+
 /* FILE: src/styles.css - UPDATES (no visual changes required for toggle; using existing checkbox styles) */
