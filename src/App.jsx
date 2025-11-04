@@ -4,6 +4,10 @@ import * as XLSX from "xlsx";
 import { createClient } from "@supabase/supabase-js";
 import "./styles.css";
 import logo from '/src/assets/logo_saude.png';
+import casaIcon from './assets/dashboardx.png';
+import funcionarioIcon from './assets/funcionariox.png';
+import historicoIcon from './assets/relatoriox.png';
+
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -814,16 +818,51 @@ function switchFacing() {
         </div>
       )}
 
-      {/* BOTTOM NAV (agora visível em todas as larguras) */}
-      {user && (
-        <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
-          <button className={`nav-item ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}><span style={{ fontSize: "28px" }}>💻</span></button>
-          <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}><span style={{ color: "#ffffffff", fontSize: "26px" }}>🧑‍💼</span></button>
-          <button className={`nav-item ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}><span style={{ color: "#ffffffff", fontSize: "26px" }}>📋</span></button>
-        </div>
-      )}
-    </div>
-  );
+{user && !cameraFullscreen && (
+  <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
+
+    <button
+      className={`nav-item ${route === "dashboard" ? "active" : ""}`}
+      onClick={() => setRoute("dashboard")}
+    >
+      <img
+        src={casaIcon}
+        alt="Dashboard"
+        className="nav-icon nav-icon--dashboard"
+        onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
+      />
+    </button>
+
+    <button
+      className={`nav-item ${route === "register" ? "active" : ""}`}
+      onClick={() => { setRoute("register"); fetchCompanies(); }}
+    >
+      <img
+        src={funcionarioIcon}
+        alt="Registrar"
+        className="nav-icon nav-icon--registerr"
+        onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
+      />
+    </button>
+
+    <button
+      className={`nav-item ${route === "history" ? "active" : ""}`}
+      onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}
+    >
+      <img
+        src={historicoIcon}
+        alt="Histórico"
+        className="nav-icon nav-icon--history"
+        onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
+      />
+    </button>
+
+  </div>
+)}
+
+
+</div>
+);
 }
 
 

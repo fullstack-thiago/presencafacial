@@ -524,11 +524,39 @@ body {
   gap: 8px;
   font-size: 0.95rem;
   border-radius: 10px;
+  
 }
 
 .bottom-nav .nav-item.active {
-  box-shadow: 0 8px 24px rgba(0,123,255,0.18), inset 0 -2px 0 rgba(255,255,255,0.06);
+  box-shadow: 0 8px 24px rgba(0, 123, 255, 0.623), inset 0 -2px 0 rgba(17, 0, 255, 0.06);
 }
+
+.bottom-nav .nav-item:focus {
+  outline: none;
+}
+
+.nav-icon {
+  display: block;
+  object-fit: contain;
+  transition: transform 0.18s ease, opacity 0.18s ease, filter 0.18s ease;
+  filter: none;
+  opacity: 1;
+  transform-origin: center;
+}
+
+/* Ícones normais */
+.nav-icon--dashboard { width: 40px; height: 40px; transform: scale(4.0); }
+.nav-icon--registerr  { width: 40px; height: 40px; transform: scale(4.0); }
+.nav-icon--history   { width: 40px; height: 40px; transform: scale(4.0); }
+
+/* Hover e ativo */
+.nav-item.active .nav-icon { transform: scale(4.0); opacity: 1; }
+.nav-item:hover .nav-icon  { transform: scale(4.7); opacity: 0.95; }
+
+
+
+
+
 
 @media (max-width: 540px) {
   .bottom-nav {
@@ -836,7 +864,6 @@ body {
 
 .btn-switch-camera.glass:hover {
   background: rgba(255, 255, 255, 0.35);
-  transform: scale(1.1) rotate(20deg);
 }
 
 
