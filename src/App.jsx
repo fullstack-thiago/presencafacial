@@ -1,4 +1,3 @@
-
 // FILE: src/App.jsx
 import React, { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
@@ -225,39 +224,149 @@ export default function App() {
     localStorage.removeItem('usuarioLogado');
   }
 
-  // ---------- camera helpers ----------
-  // Função para abrir a câmera com checagem de readiness
-  async function openCamera() {
+  // -------------------- NOVAS FUNÇÕES (melhorias de estabilidade) --------------------
+
+  // escolhe deviceId preferido (mais confiável que depender só de facingMode)
+  async function getPreferredDeviceId(preferredFacing = "environment") {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter(d => d.kind === "videoinput");
+      if (!videoInputs.length) return null;
+
+      // try to match device label if permission was already granted
+      const labelMatch = videoInputs.find(d => {
+        const label = (d.label || "").toLowerCase();
+        if (preferredFacing === "user") return label.includes("front") || label.includes("facing front") || label.includes("user");
+        return label.includes("back") || label.includes("rear") || label.includes("environment");
+      });
+      if (labelMatch) return labelMatch.deviceId;
+
+      // fallback heuristics
+      return preferredFacing === "environment" ? videoInputs[videoInputs.length - 1].deviceId : videoInputs[0].deviceId;
+    } catch (err) {
+      console.warn("getPreferredDeviceId erro:", err);
+      return null;
+    }
+  }
+
+  // adiciona listeners nas tracks para detectar ended/mute/unmute
+  function attachTrackListeners(stream) {
+    if (!stream) return;
+    stream.getTracks().forEach((track) => {
+      if (track._hasCameraListeners) return;
+      track._hasCameraListeners = true;
+
+      track.addEventListener("ended", () => {
+        console.warn("Track ended");
+        setStatusMsg("Stream finalizado pelo dispositivo");
+        stopRecognitionLoop();
+        stopCamera();
+        // tentar reabrir automaticamente com tentativas limitadas
+        retryOpenCamera(2, 700);
+      });
+
+      track.addEventListener("mute", () => {
+        console.warn("Track muted");
+        setStatusMsg("Stream silenciado (mute)");
+      });
+
+      track.addEventListener("unmute", () => {
+        console.warn("Track unmuted");
+        setStatusMsg("Stream reencontrado (unmute)");
+      });
+    });
+  }
+
+  // consome alguns frames para "warmup" antes de começar a detecção (reduz detecções em frames vazios)
+  async function warmUpVideoFrames(frames = 6, msBetween = 80) {
+    if (!videoRef.current) return;
+    const v = videoRef.current;
+    await new Promise((res) => {
+      const check = () => {
+        if (v && v.videoWidth > 0 && v.videoHeight > 0) return res();
+        setTimeout(check, 80);
+      };
+      check();
+    });
+
+    for (let i = 0; i < frames; i++) {
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r, msBetween)));
+    }
+  }
+
+  // retry com backoff para reabrir a câmera
+  async function retryOpenCamera(attempts = 3, initialDelayMs = 300) {
+    let attempt = 0;
+    while (attempt < attempts) {
+      attempt++;
+      try {
+        await openCamera({ skipAutoStartRecognition: false, retrying: true });
+        return true;
+      } catch (err) {
+        console.warn(`retryOpenCamera: tentativa ${attempt} falhou`, err);
+        setStatusMsg(`Tentativa de abrir câmera ${attempt} falhou`);
+        const delay = initialDelayMs * attempt;
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+    console.error("Todas tentativas de abrir câmera falharam");
+    return false;
+  }
+
+  // -------------------- openCamera aprimorada --------------------
+  // aceita opts: { skipAutoStartRecognition, retrying }
+  async function openCamera(opts = { skipAutoStartRecognition: false, retrying: false }) {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         setStatusMsg("getUserMedia não suportado neste navegador");
-        return;
+        throw new Error("getUserMedia não suportado");
       }
 
-      // Fecha stream anterior, se existir
-      if (streamRef.current) {
-        try {
-          streamRef.current.getTracks().forEach((t) => t.stop());
-        } catch (e) {}
-        streamRef.current = null;
-        if (videoRef.current) videoRef.current.srcObject = null;
+      // stop old stream safely
+      stopRecognitionLoop();
+      stopCamera();
+
+      // resolve deviceId preferido (mais confiável que só facingMode)
+      let constraints;
+      const preferredDeviceId = await getPreferredDeviceId(facingMode);
+      if (preferredDeviceId) {
+        constraints = {
+          video: {
+            deviceId: { exact: preferredDeviceId },
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            facingMode,
+          },
+        };
+      } else {
+        constraints = {
+          video: {
+            facingMode,
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
+        };
       }
 
-      const constraints = { video: { facingMode } };
+      setStatusMsg("Pedindo permissão para câmera...");
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
       if (!videoRef.current) {
         stream.getTracks().forEach((t) => t.stop());
         setStatusMsg("Vídeo não disponível");
-        return;
+        throw new Error("Vídeo element não encontrado");
       }
 
       videoRef.current.srcObject = stream;
       streamRef.current = stream;
+      attachTrackListeners(stream);
 
-      await videoRef.current.play().catch(() => {});
+      await videoRef.current.play().catch((e) => {
+        console.warn("play() falhou:", e);
+      });
       setStatusMsg("Câmera aberta");
 
-      // Aguarda até o vídeo ter dimensões válidas
+      // wait for valid video size
       await new Promise((resolve) => {
         const checkReady = () => {
           const v = videoRef.current;
@@ -271,23 +380,26 @@ export default function App() {
         checkReady();
       });
 
-      // Ajuste o tamanho do canvas
+      // Adjust canvas
       setTimeout(() => {
-          const canvas = canvasRef.current;
-          const v = videoRef.current;
-          if (canvas && v) {
-            const ratio = window.devicePixelRatio || 1;
-            canvas.width = (v.videoWidth || v.clientWidth) * ratio;
-            canvas.height = (v.videoHeight || v.clientHeight) * ratio;
-            canvas.style.width = "100vw";
-            canvas.style.height = "100vh";
-            const ctx = canvas.getContext('2d');
-            if (ctx) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-          }
-        }, 400);
+        const canvas = canvasRef.current;
+        const v = videoRef.current;
+        if (canvas && v) {
+          const ratio = window.devicePixelRatio || 1;
+          canvas.width = (v.videoWidth || v.clientWidth) * ratio;
+          canvas.height = (v.videoHeight || v.clientHeight) * ratio;
+          canvas.style.width = "100vw";
+          canvas.style.height = "100vh";
+          const ctx = canvas.getContext('2d');
+          if (ctx) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+        }
+      }, 350);
+
+      // warm up frames antes de começar detecção
+      await warmUpVideoFrames(6, 60);
 
       // Inicia o reconhecimento automático quando apropriado (attendance/fullscreen)
-      if ((cameraFullscreen || route === 'attendance') && autoRecognitionEnabled) {
+      if (!opts.skipAutoStartRecognition && (cameraFullscreen || route === 'attendance') && autoRecognitionEnabled) {
         console.log(
           "openCamera: faceapiLoaded=",
           faceapiLoaded,
@@ -303,23 +415,32 @@ export default function App() {
         }
         if (!faceapiLoaded) {
           setStatusMsg("Aguarde carregamento dos modelos...");
+          // uma esperinha caso esteja carregando
+          await new Promise((r) => setTimeout(r, 500));
+        }
+
+        if (!faceapiLoaded) {
+          setStatusMsg("Modelos ainda não prontos");
           return;
         }
 
-        // Delay pequeno (meio segundo) para garantir que tudo esteja pronto
+        // Delay pequeno para garantir estabilidade
         setTimeout(() => {
-          console.log("▶️ Reconhecimento automático iniciado");
-          prepareFaceMatcherAndStart();
-        }, 500);
+          console.log("▶️ Reconhecimento automático iniciado (após openCamera aprimorada)");
+          prepareFaceMatcherAndStart().catch((e) => console.error("prepareFaceMatcherAndStart erro:", e));
+        }, 250);
       }
+
+      return true;
     } catch (err) {
-      console.error("Erro ao abrir câmera:", err);
-      setStatusMsg("Erro ao abrir câmera: " + err.message);
+      console.error("Erro ao abrir câmera (aprimorada):", err);
+      setStatusMsg("Erro ao abrir câmera: " + (err && err.message ? err.message : String(err)));
+      throw err;
     }
   }
 
-  // Alterna entre câmeras frontal e traseira
-  function switchFacing() {
+  // -------------------- switchFacing aprimorado --------------------
+  async function switchFacing() {
     setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
 
     // Fecha stream atual antes de reabrir
@@ -334,9 +455,15 @@ export default function App() {
     }
 
     // Reabre a câmera após pequeno atraso
-    setTimeout(() => {
-      openCamera().catch((e) => console.error("Erro ao reabrir câmera:", e));
-    }, 400);
+    setTimeout(async () => {
+      try {
+        await openCamera();
+      } catch (err) {
+        console.error("Erro ao reabrir câmera:", err);
+        // fallback: tentar com retry
+        retryOpenCamera(2, 400);
+      }
+    }, 350);
   }
 
   function stopCamera() {
@@ -498,7 +625,17 @@ export default function App() {
       isProcessingRef.current = true;
 
       try {
-        const options = new faceapi.TinyFaceDetectorOptions({ inputSize: 160, scoreThreshold: 0.5 });
+        // dynamic detector options: relax if no detections for a while
+        let inputSize = 160;
+        let scoreThreshold = 0.5;
+        const lastDetAt = window._lastDetectionsAt || 0;
+        if (Date.now() - lastDetAt > 7000) {
+          // sem detecções há >7s, relaxar para tentar identificar
+          inputSize = 128;
+          scoreThreshold = 0.45;
+        }
+
+        const options = new faceapi.TinyFaceDetectorOptions({ inputSize, scoreThreshold });
         const detections = await faceapi
           .detectAllFaces(videoRef.current, options)
           .withFaceLandmarks()
@@ -512,6 +649,9 @@ export default function App() {
           isProcessingRef.current = false;
           return;
         }
+
+        // mark last detection time (used by dynamic options)
+        window._lastDetectionsAt = Date.now();
 
         const matcher = faceMatcherRef.current;
         const idMap = idNameMapRef.current;
@@ -583,6 +723,13 @@ export default function App() {
 
       } catch (err) {
         console.error('Erro no loop de reconhecimento', err);
+        // se houver erro grave por causa do stream, tentar reiniciar câmera (tentativa única)
+        if (err && err.name && (err.name === 'NotReadableError' || err.name === 'TrackStartError' || err.name === 'OverconstrainedError')) {
+          console.warn("Erro relacionado à câmera detectado no loop, tentando reabrir...");
+          stopRecognitionLoop();
+          stopCamera();
+          retryOpenCamera(1, 500);
+        }
       } finally {
         isProcessingRef.current = false;
       }
@@ -824,7 +971,7 @@ export default function App() {
               {route === "history" && (
                 <div className="card">
                   <h2>📋 Histórico</h2>
-                  
+
 
                   {/* --- Filtro com ícone de lupa + combo box --- */}
                   <div className="filter-row" style={{ display:'flex', alignItems:'center', gap:'8px', margin:'12px 0' }}>
@@ -838,14 +985,13 @@ export default function App() {
                     </select>
                   </div>
 
-                 
-                    
+
 
                     <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
-                      <button className="btn" onClick={() => fetchAttendances({ company_id: selectedCompany })}>Carregar</button>
+                      <button className="btn" onClick={() => fetchAttendances({ company_id: selectedCompany })}>Atualizar</button>
                       <button className="btn primary" onClick={exportAttendancesToExcel}>Exportar XLSX</button>
                     </div>
-                  
+
 
                   <div className="table-wrap">
                     <table className="table">
