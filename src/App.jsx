@@ -1116,7 +1116,7 @@ export default function App() {
 {/* New container: Registered employees list */}
 <div className="card">
   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-    <h3 style={{ margin: 0, marginLeft: '25px'}}>👨‍💼</h3>
+    <h3 style={{ margin: 0, marginLeft: '15px'}}>👨‍💼</h3>
 
     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
       <input
@@ -1271,7 +1271,7 @@ export default function App() {
 
                   <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
                     <button className="btn" onClick={() => fetchAttendances({ company_id: selectedCompany })}>Atualizar</button>
-                    <button className="btn primary" onClick={exportAttendancesToExcel}>Exportar XLSX</button>
+                    <button className="btn primary" onClick={exportAttendancesToExcel}>Exportar</button>
                   </div>
 
                   <div className="table-wrap">
