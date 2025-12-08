@@ -37,8 +37,12 @@ export default function App() {
 
   // Entities
   const [companies, setCompanies] = useState([]);
-  const [employees, setEmployees] = useState([]);
+  const [employees, setEmployees] = useState([]); // employees for selectedCompany
   const [selectedCompany, setSelectedCompany] = useState(null); // keep as string or uuid
+
+  // Registered employees list (dashboard container)
+  const [registeredEmployees, setRegisteredEmployees] = useState([]);
+  const [searchName, setSearchName] = useState("");
 
   // Camera / attendance
   const recognitionRaf = useRef(null);
@@ -55,10 +59,11 @@ export default function App() {
   // recognition enabled state + persistence
   const [recognitionEnabled, setRecognitionEnabled] = useState(false);
 
-  // Register form
+  // Register form (and edit)
   const [newName, setNewName] = useState("");
   const [newDepartment, setNewDepartment] = useState("");
   const [capturedDescriptors, setCapturedDescriptors] = useState([]);
+  const [editEmployeeId, setEditEmployeeId] = useState(null);
 
   // History
   const [attendances, setAttendances] = useState([]);
@@ -99,6 +104,11 @@ export default function App() {
     // restore recognition preference
     const pref = localStorage.getItem('recognitionEnabled');
     if (pref === '1') setRecognitionEnabled(true);
+
+    // load initial data
+    fetchCompanies();
+    fetchRegisteredEmployees();
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -126,9 +136,6 @@ export default function App() {
     }
 
     loadFaceApiAndModels();
-
-    fetchCompanies();
-
     return () => {
       mounted = false;
       stopRecognitionLoop();
@@ -174,8 +181,7 @@ export default function App() {
     setCompanies(data || []);
   }
 
-  // NOTE: select explicit columns that might exist after schema changes.
-  // We request both role and department to be tolerant.
+  // Fetch employees for the selected company (used by register and dashboard stats)
   async function fetchEmployees(companyId) {
     if (!companyId) {
       setEmployees([]);
@@ -183,8 +189,9 @@ export default function App() {
     }
     const { data, error } = await supabase
       .from("employees")
-      .select("id, name, role, department, company_id, descriptors")
-      .eq("company_id", String(companyId));
+      .select("id, name, role, department, company_id, descriptors, created_at")
+      .eq("company_id", String(companyId))
+      .order("created_at", { ascending: false });
     if (error) {
       console.error("fetchEmployees", error);
       setStatusMsg("Erro carregando funcionários");
@@ -193,25 +200,63 @@ export default function App() {
     setEmployees(data || []);
   }
 
+  // Fetch attendances with joined employee department and company name
   async function fetchAttendances(filters = {}) {
     try {
+      // Build base query selecting attendance fields and joining employees and companies
       let q = supabase
         .from("attendances")
-        .select("*,employees!inner(name)")
+        .select("id, attended_at, confidence, employee_id, company_id, employees(id, name, department), companies(id, name)")
         .order("attended_at", { ascending: false })
         .limit(1000);
+
       if (filters.company_id) q = q.eq("company_id", String(filters.company_id));
       if (filters.employee_id) q = q.eq("employee_id", String(filters.employee_id));
       if (filters.gte_attended_at) q = q.gte('attended_at', filters.gte_attended_at.toISOString());
+
       const { data, error } = await q;
       if (error) {
-        console.error(error);
+        console.error("fetchAttendances", error);
+        setStatusMsg("Erro carregando histórico");
       } else {
         setAttendances(data || []);
       }
     } catch (err) {
       console.error("Erro fetchAttendances", err);
+      setStatusMsg("Erro carregando histórico");
     }
+  }
+
+  // Fetch registered employees (optionally filtered by selectedCompany).
+  // Joins company name to each employee for display.
+  async function fetchRegisteredEmployees() {
+    try {
+      let q = supabase
+        .from("employees")
+        .select("id, name, department, created_at, company_id, companies(id, name)")
+        .order("created_at", { ascending: false })
+        .limit(1000);
+
+      if (selectedCompany) {
+        q = q.eq("company_id", String(selectedCompany));
+      }
+
+      const { data, error } = await q;
+      if (error) {
+        console.error("fetchRegisteredEmployees", error);
+        setStatusMsg("Erro carregando funcionários registrados");
+        return;
+      }
+      setRegisteredEmployees(data || []);
+    } catch (err) {
+      console.error("fetchRegisteredEmployees", err);
+    }
+  }
+
+  // NOTE: select explicit columns that might exist after schema changes.
+  // We request both role and department to be tolerant.
+  async function fetchAttendancesInitial() {
+    await fetchAttendances({ company_id: selectedCompany });
   }
 
   // ---------- login handling (single hard-coded user) ----------
@@ -240,7 +285,6 @@ export default function App() {
   }
 
   // -------------------- NOVAS FUNÇÕES (melhorias de estabilidade) --------------------
-
   async function getPreferredDeviceId(preferredFacing = "environment") {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
@@ -541,21 +585,30 @@ export default function App() {
   }
 
   // Attempt several payload shapes to be tolerant to schema changes
-  async function attemptInsertEmployee(payloads) {
+  async function attemptInsertEmployee(payloads, isUpdate = false, updateId = null) {
     for (const payload of payloads) {
       try {
-        const { data, error } = await supabase.from("employees").insert([payload]).select();
-        if (error) {
-          console.warn("insert attempt error for payload:", payload, error);
-          continue;
+        if (isUpdate && updateId) {
+          const { data, error } = await supabase.from("employees").update(payload).eq("id", updateId).select();
+          if (error) {
+            console.warn("update attempt error for payload:", payload, error);
+            continue;
+          }
+          return { success: true, data };
+        } else {
+          const { data, error } = await supabase.from("employees").insert([payload]).select();
+          if (error) {
+            console.warn("insert attempt error for payload:", payload, error);
+            continue;
+          }
+          return { success: true, data };
         }
-        return { success: true, data };
       } catch (err) {
-        console.error("insert exception for payload:", payload, err);
+        console.error("insert/update exception for payload:", payload, err);
         continue;
       }
     }
-    return { success: false, message: "Todas as tentativas de INSERT falharam" };
+    return { success: false, message: "Todas as tentativas de INSERT/UPDATE falharam" };
   }
 
   async function saveNewEmployee() {
@@ -567,18 +620,21 @@ export default function App() {
       alert("Nome é obrigatório");
       return;
     }
-    if (capturedDescriptors.length === 0) {
-      alert("Capte ao menos 1 foto");
+    if (capturedDescriptors.length === 0 && !editEmployeeId) {
+      // If editing, allow not providing new captures (keep existing descriptors)
+      alert("Capte ao menos 1 foto (ou edite sem novas capturas)");
       return;
     }
 
     const base = {
       company_id: String(selectedCompany),
       name: newName,
-      descriptors: capturedDescriptors,
+      descriptors: capturedDescriptors.length ? capturedDescriptors : undefined,
       photos: [],
+      department: newDepartment || null,
     };
 
+    // Build payload variants for tolerant insertion/update
     const payloads = [
       { ...base, department: newDepartment },
       { ...base, role: newDepartment },
@@ -586,20 +642,24 @@ export default function App() {
       { ...base, department: newDepartment || "N/D" },
     ];
 
-    setStatusMsg("Salvando funcionário...");
-    const res = await attemptInsertEmployee(payloads);
+    setStatusMsg(editEmployeeId ? "Atualizando funcionário..." : "Salvando funcionário...");
+    const res = await attemptInsertEmployee(payloads, Boolean(editEmployeeId), editEmployeeId);
     if (!res.success) {
-      console.error("saveNewEmployee: falha ao inserir, veja erros no console");
+      console.error("saveNewEmployee: falha ao inserir/atualizar, veja erros no console");
       alert("Erro ao salvar funcionário. Ver console para detalhes.");
       setStatusMsg("Erro ao salvar funcionário");
       return;
     }
 
-    alert("Funcionário salvo");
+    alert(editEmployeeId ? "Funcionário atualizado" : "Funcionário salvo");
+    // reset form
     setNewName("");
     setNewDepartment("");
     setCapturedDescriptors([]);
+    setEditEmployeeId(null);
+    // refresh lists
     fetchEmployees(selectedCompany);
+    fetchRegisteredEmployees();
     setRoute("dashboard");
     setStatusMsg("Funcionário salvo");
   }
@@ -864,6 +924,8 @@ export default function App() {
     const rows = attendances.map((r) => ({
       id: r.id,
       employee: r.employees?.name || r.employee_id,
+      department: r.employees?.department || "",
+      company: r.companies?.name || r.company_id,
       attended_at: r.attended_at,
       confidence: r.confidence,
     }));
@@ -894,7 +956,59 @@ export default function App() {
     applyHistoryFilter(val);
   }
 
-  // small indicator component
+  // ---------- Registered employees actions ----------
+  function handleSearchChange(e) {
+    const v = e.target.value;
+    setSearchName(v);
+  }
+
+  // Filtered list derived from registeredEmployees + searchName
+  const filteredRegisteredEmployees = registeredEmployees.filter((emp) => {
+    if (!searchName) return true;
+    return (emp.name || "").toLowerCase().includes(searchName.toLowerCase());
+  });
+
+  async function handleDeleteEmployee(empId) {
+    const ok = confirm("Deseja realmente apagar este funcionário? Esta ação é irreversível.");
+    if (!ok) return;
+    try {
+      const { error } = await supabase.from("employees").delete().eq("id", empId);
+      if (error) {
+        console.error("Erro ao apagar funcionário", error);
+        alert("Erro ao apagar funcionário");
+        return;
+      }
+      setStatusMsg("Funcionário apagado");
+      fetchEmployees(selectedCompany);
+      fetchRegisteredEmployees();
+      fetchAttendances({ company_id: selectedCompany });
+    } catch (err) {
+      console.error("Erro handleDeleteEmployee", err);
+      alert("Erro ao apagar funcionário");
+    }
+  }
+
+  function handleEditEmployee(emp) {
+    // emp has structure: { id, name, department, created_at, company_id, companies: { name } }
+    setEditEmployeeId(emp.id);
+    setNewName(emp.name || "");
+    setNewDepartment(emp.department || "");
+    setCapturedDescriptors([]); // keep empty — update will keep existing descriptors if none provided
+    setSelectedCompany(emp.company_id || null);
+    // navigate to register form
+    setRoute("register");
+    // ensure employees list and form are in sync
+    fetchEmployees(emp.company_id);
+  }
+
+  function handleCancelEdit() {
+    setEditEmployeeId(null);
+    setNewName("");
+    setNewDepartment("");
+    setCapturedDescriptors([]);
+  }
+
+  // ---------- recognition indicator component ----------
   const RecognitionIndicator = () => (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
       <div style={{ width: 12, height: 12, borderRadius: 12, background: recognitionEnabled ? '#22c55e' : '#ef4444', boxShadow: recognitionEnabled ? '0 0 8px rgba(34,197,94,0.4)' : '0 0 8px rgba(239,68,68,0.3)' }} />
@@ -952,6 +1066,7 @@ export default function App() {
           <div className="layout">
             <section className="content">
               {route === "dashboard" && (
+                <>
                 <div className="card">
                   <h2>Dashboard 💻</h2>
                   <br />
@@ -959,7 +1074,7 @@ export default function App() {
                     <div className="col">
                       <label className="label">🏢 - Empresa </label>
 
-                      <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
+                      <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); fetchRegisteredEmployees(); }}>
                         <option value="">-- selecione a empresa --</option>
                         {companies.map((c) => (
                           <option key={c.id} value={String(c.id)}>{c.name}</option>
@@ -997,16 +1112,101 @@ export default function App() {
                     </div>
                   </div>
                 </div>
+
+{/* New container: Registered employees list */}
+<div className="card">
+  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+    <h3 style={{ margin: 0, marginLeft: '25px'}}>👨‍💼</h3>
+
+    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+      <input
+        className="input"
+        placeholder="Buscar por nome..."
+        value={searchName}
+        onChange={handleSearchChange}
+        style={{ width: 200, minWidth: 120 }}
+      />
+
+      {/* Atualizar */}
+      <button
+        className=""
+        onClick={() => { fetchRegisteredEmployees(); fetchEmployees(selectedCompany); setStatusMsg('Lista atualizada'); }}
+        title="Atualizar lista"
+      >
+        🔄 
+      </button>
+    </div>
+  </div>
+
+  <div className="table-wrap" style={{ marginTop: 12 }}>
+    {/* Desktop / tablet: tabela */}
+    <table className="table responsive-table">
+      <thead>
+        <tr>
+          <th>Nome</th>
+          <th>Departamento</th>
+          <th>Empresa</th>
+          <th>Registrado em</th>
+          <th style={{ width: 120 }}>Ações</th>
+        </tr>
+      </thead>
+      <tbody>
+        {filteredRegisteredEmployees.length === 0 && (
+          <tr><td colSpan={5} style={{ padding: 20 }} className="muted">Nenhum funcionário encontrado</td></tr>
+        )}
+        {filteredRegisteredEmployees.map((emp) => (
+          <tr key={emp.id}>
+            <td>{emp.name}</td>
+            <td>{emp.department || "-"}</td>
+            <td>{emp.companies?.name || companies.find(c => String(c.id) === String(emp.company_id))?.name || "-"}</td>
+            <td>{emp.created_at ? new Date(emp.created_at).toLocaleString() : "-"}</td>
+            <td>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn" title="Editar" onClick={() => handleEditEmployee(emp)}>✏️</button>
+                <button className="btn" title="Apagar" onClick={() => handleDeleteEmployee(emp.id)}>🗑️</button>
+              </div>
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+
+    {/* Mobile: cards empilhados (visível apenas em telas pequenas via CSS) */}
+    <div className="employee-cards">
+      {filteredRegisteredEmployees.map((emp) => (
+        <div className="employee-card" key={"card-" + emp.id}>
+          <div className="employee-card-row">
+            <div>
+              <div style={{ fontWeight: 700 }}>{emp.name}</div>
+              <div className="muted" style={{ fontSize: 13 }}>{emp.department || "-"}</div>
+              <div style={{ fontSize: 13 }}>{emp.companies?.name || companies.find(c => String(c.id) === String(emp.company_id))?.name || "-"}</div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginLeft: 12 }}>
+              <div style={{ fontSize: 12, color: '#666' }}>{emp.created_at ? new Date(emp.created_at).toLocaleString() : "-"}</div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn" style={{ padding: '8px 10px' }} onClick={() => handleEditEmployee(emp)}>✏️ </button>
+                <button className="btn" style={{ padding: '8px 10px' }} onClick={() => handleDeleteEmployee(emp.id)}>🗑️ </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+</div>
+
+                </>
               )}
 
               {route === "register" && (
                 <div className="card">
-                  <h2>Registrar Funcionário</h2>
+                  <h2>{editEmployeeId ? "Editar Funcionário" : "Registrar Funcionário"}</h2>
                   <br />
 
                   <div className="form-row">
                     <label>Empresa do Funcionário</label>
-                    <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
+                    <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); fetchRegisteredEmployees(); }}>
                       <option value="">-- selecione a empresa --</option>
                       {companies.map((c) => (<option key={c.id} value={String(c.id)}>{c.name}</option>))}
                     </select>
@@ -1034,7 +1234,7 @@ export default function App() {
                         <span className="icon-large">🔄</span>
                         <span className="btn-label"></span>
                       </button>
-                      
+
                       <button className="btn-primary cam-btn" onClick={handleCaptureForRegister} aria-label="Capturar rosto" title="Capturar Rosto">
                         <span className="icon-large">📸</span>
                         <span className="btn-label"></span>
@@ -1047,15 +1247,16 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="form-row">
-                    <button className="btn primary" onClick={saveNewEmployee}>Salvar Funcionário</button>
+                  <div className="form-row" style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn primary" onClick={saveNewEmployee}>{editEmployeeId ? "Salvar alterações" : "Salvar Funcionário"}</button>
+                    {editEmployeeId && <button className="btn" onClick={() => { handleCancelEdit(); setRoute("dashboard"); }}>Cancelar edição</button>}
                   </div>
                 </div>
               )}
 
               {route === "history" && (
                 <div className="card">
-                  <h2>📋 Histórico</h2>
+                  <h2>📋 Histórico de Presenças</h2>
 
                   <div className="filter-row" style={{ display:'flex', alignItems:'center', gap:'8px', margin:'12px 0' }}>
                     <span style={{ fontSize:'20px' }}>🔍</span>
@@ -1076,11 +1277,17 @@ export default function App() {
                   <div className="table-wrap">
                     <table className="table">
                       <thead>
-                        <tr><th>ID</th><th>Funcionário</th><th>Quando</th><th>Confiança</th></tr>
+                        <tr><th>Funcionário</th><th>Departamento</th><th>Empresa</th><th>Quando</th><th>Confiança</th></tr>
                       </thead>
                       <tbody>
                         {attendances.map((a) => (
-                          <tr key={a.id}><td>{String(a.id).slice(0,6)}</td><td>{a.employees?.name || a.employee_id}</td><td>{new Date(a.attended_at).toLocaleString()}</td><td>{Number(a.confidence).toFixed(2)}</td></tr>
+                          <tr key={a.id}>
+                            <td>{a.employees?.name || a.employee_id}</td>
+                            <td>{a.employees?.department || "-"}</td>
+                            <td>{a.companies?.name || a.company_id}</td>
+                            <td>{a.attended_at ? new Date(a.attended_at).toLocaleString() : "-"}</td>
+                            <td>{a.confidence != null ? Number(a.confidence).toFixed(2) : "-"}</td>
+                          </tr>
                         ))}
                       </tbody>
                     </table>
@@ -1135,7 +1342,7 @@ export default function App() {
             <img src={casaIcon} alt="Dashboard" className="nav-icon nav-icon--dashboard" onError={(e) => { e.currentTarget.style.opacity = 0.5; }} />
           </button>
 
-          <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}>
+          <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); fetchRegisteredEmployees(); }}>
             <img src={funcionarioIcon} alt="Registrar" className="nav-icon nav-icon--registerr" onError={(e) => { e.currentTarget.style.opacity = 0.5; }} />
           </button>
 

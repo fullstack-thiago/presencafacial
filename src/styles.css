@@ -903,3 +903,48 @@ body {
 }
 
 
+
+
+
+/* ---------- Responsive adjustments for Registered Employees container ---------- */
+
+/* by default hide mobile cards; show table */
+.employee-cards { display: none; }
+
+/* mobile: hide table and show cards */
+@media (max-width: 900px) {
+  .responsive-table { display: none; } /* hide desktop table */
+  .employee-cards { display: block; margin-top: 8px; }
+
+  .employee-card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.02));
+    border-radius: 12px;
+    padding: 12px;
+    margin-bottom: 10px;
+    border: 1px solid rgba(0,0,0,0.04);
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.04);
+  }
+
+  .employee-card-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+
+  .employee-card .muted { color: rgba(0,0,0,0.55); }
+
+  /* increase tappable area for buttons */
+  .employee-card .btn {
+    padding: 10px 12px;
+    font-size: 14px;
+    border-radius: 10px;
+  }
+}
+
+/* ensure table still scrolls nicely on small screens if needed */
+@media (max-width: 540px) {
+  .table { min-width: 520px; } /* keep some scroll but prefer cards */
+}
