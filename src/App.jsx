@@ -12,87 +12,139 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// --- HARD-CODED SINGLE USER (determinada no código) ---
-const HARDCODED_USER = {
-  username: "admin",
-  password: "senha123", // troque conforme quiser
-  name: "R.R.",
-};
+// CONFIG
+const DEDUP_MS = 5 * 60 * 1000; // 5 minutos
+const DETECTION_INTERVAL_MS = 700;
+const MATCH_THRESHOLD = 0.55;
 
+// App
 export default function App() {
-  // --- Manter login ao dar F5 ---
-  const storedUser = localStorage.getItem('usuarioLogado');
+  // auth / user
+  const [user, setUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
-  // --- routes / app state ---
-  const [route, setRoute] = useState("login"); // 'login','dashboard','register','attendance','history'
-  const [loadingModels, setLoadingModels] = useState(true);
-  const [faceapi, setFaceapi] = useState(null);
-  const [faceapiLoaded, setFaceapiLoaded] = useState(false);
+  // login form
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
-  const [user, setUser] = useState(null); // agora controlado por login real
-
-  // Login form
-  const [loginUsername, setLoginUsername] = useState("");
-  const [loginPassword, setLoginPassword] = useState("");
-
-  // Entities
-  const [companies, setCompanies] = useState([]);
-  const [employees, setEmployees] = useState([]);
-  const [selectedCompany, setSelectedCompany] = useState(null); // keep as string or uuid
-
-  // Camera / attendance
-  const recognitionRaf = useRef(null);
-  const videoRef = useRef(null);
-  const canvasRef = useRef(null); // overlay canvas
-  const streamRef = useRef(null); // ← usar ref para stream para cleanup seguro
-  const [facingMode, setFacingMode] = useState("environment");
+  // routes / view
+  const [route, setRoute] = useState("login"); // login, dashboard, register, history, attendance
   const [statusMsg, setStatusMsg] = useState("");
 
-  // Register form
+  // face-api state
+  const [faceapi, setFaceapi] = useState(null);
+  const [faceapiLoaded, setFaceapiLoaded] = useState(false);
+  const [loadingModels, setLoadingModels] = useState(true);
+
+  // entities
+  const [companies, setCompanies] = useState([]);
+  const [employees, setEmployees] = useState([]); // basic employee list (without descriptors)
+  const [selectedCompany, setSelectedCompany] = useState(null);
+
+  // camera / recognition
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const recognitionRaf = useRef(null);
+  const recognitionRunningRef = useRef(false);
+  const isProcessingRef = useRef(false);
+  const [facingMode, setFacingMode] = useState("environment");
+  const [cameraFullscreen, setCameraFullscreen] = useState(false);
+  const [autoRecognitionEnabled, setAutoRecognitionEnabled] = useState(true);
+  const [recentMatches, setRecentMatches] = useState([]);
+  const [showOverlay, setShowOverlay] = useState(true);
+
+  // registration
   const [newName, setNewName] = useState("");
   const [newDepartment, setNewDepartment] = useState("");
   const [capturedDescriptors, setCapturedDescriptors] = useState([]);
 
-  // History
+  // attendances
   const [attendances, setAttendances] = useState([]);
 
-  // LIVE match list and overlay toggle
-  const [recentMatches, setRecentMatches] = useState([]); // small live list
-  const [showOverlay, setShowOverlay] = useState(true);
-
-  // Fullscreen camera app mode
-  const [cameraFullscreen, setCameraFullscreen] = useState(false);
-
-  // Auto recognition toggle (new)
-  const [autoRecognitionEnabled, setAutoRecognitionEnabled] = useState(true);
-
-  // CONFIG (made faster)
-  const DEDUP_MS = 5 * 60 * 1000; // 5 minutos para evitar duplicação de presença
-  const DETECTION_INTERVAL_MS = 700; // intervalo padrão (mais rápido)
-  const MATCH_THRESHOLD = 0.55; // face matcher threshold (ajustável)
-
-  // lastSeen local to avoid hammering DB when same person is in frame repeatedly
-  const lastSeenRef = useRef({}); // { [employeeId]: timestamp }
-
-  // guards
-  const recognitionRunningRef = useRef(false);
-  const isProcessingRef = useRef(false);
-
-  // small cached matcher & map so detector isn't rebuilt each frame
+  // matching helpers
   const faceMatcherRef = useRef(null);
   const idNameMapRef = useRef({});
+  const lastSeenRef = useRef({}); // local dedup map: {employeeId: timestamp}
+  const localAttendanceCache = useRef({}); // cache last attendance timestamp per employeeId
 
-  // If the state of login exists in localStorage, keep logged in
+  // ------------------ auth handling ------------------
   useEffect(() => {
-    if (storedUser) {
-      // simulate retrieving user info
-      setUser({ name: HARDCODED_USER.name, username: HARDCODED_USER.username });
-      setRoute("dashboard");
+    let mounted = true;
+    async function initAuth() {
+      setAuthLoading(true);
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!mounted) return;
+      if (session && session.user) {
+        setUser(session.user);
+        setRoute("dashboard");
+      } else {
+        setUser(null);
+        setRoute("login");
+      }
+      setAuthLoading(false);
     }
+    initAuth();
+
+    const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+      if (session && session.user) {
+        setUser(session.user);
+        setRoute("dashboard");
+      } else {
+        setUser(null);
+        setRoute("login");
+      }
+    });
+
+    return () => {
+      mounted = false;
+      listener?.subscription?.unsubscribe?.();
+      stopRecognitionLoop();
+      stopCamera();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function handleSignIn(e) {
+    e?.preventDefault?.();
+    setStatusMsg("Autenticando...");
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) {
+        console.error("signIn error", error);
+        alert("Erro ao autenticar: " + error.message);
+        setStatusMsg("");
+        return;
+      }
+      if (data?.user) {
+        setUser(data.user);
+        setRoute("dashboard");
+        setEmail("");
+        setPassword("");
+        setStatusMsg("Autenticado");
+      } else {
+        setStatusMsg("");
+      }
+    } catch (err) {
+      console.error(err);
+      alert("Erro inesperado ao autenticar");
+      setStatusMsg("");
+    }
+  }
 
-  // ---------- load face-api dynamically and models ----------
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+    setUser(null);
+    setRoute("login");
+    setStatusMsg("");
+    stopRecognitionLoop();
+    stopCamera();
+  }
+
+  // ------------------ load face-api dynamically + models ------------------
   useEffect(() => {
     let mounted = true;
     async function loadFaceApiAndModels() {
@@ -100,8 +152,8 @@ export default function App() {
         const f = await import("face-api.js");
         if (!mounted) return;
         setFaceapi(f);
-        const MODEL_URL = "/models"; // coloque os arquivos de modelos em public/models
         setLoadingModels(true);
+        const MODEL_URL = "/models";
         await f.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
         await f.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
         await f.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
@@ -110,13 +162,11 @@ export default function App() {
         setStatusMsg("Modelos prontos");
       } catch (err) {
         console.error("Erro carregando face-api", err);
-        setStatusMsg("Erro carregando modelos: " + String(err));
+        setStatusMsg("Erro carregando modelos");
         setLoadingModels(false);
       }
     }
-
     loadFaceApiAndModels();
-
     fetchCompanies();
 
     return () => {
@@ -127,33 +177,17 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Re-open camera when switching facingMode or route that uses camera
+  // re-open camera when switching facingMode or opening camera routes
   useEffect(() => {
     if (!videoRef.current) return;
-    if (route === "register" || route === "attendance") {
-      const t = setTimeout(() => {
-        openCamera();
-      }, 300);
+    if (route === "register" || cameraFullscreen || route === "attendance") {
+      const t = setTimeout(() => openCamera().catch(() => {}), 300);
       return () => clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [facingMode, route]);
+  }, [facingMode, route, cameraFullscreen]);
 
-  // If user toggles auto-recognition while fullscreen, start/stop accordingly
-  useEffect(() => {
-    if (!cameraFullscreen) return;
-    if (autoRecognitionEnabled) {
-      // start recognition if camera is open
-      if (videoRef.current && streamRef.current) {
-        prepareFaceMatcherAndStart();
-      }
-    } else {
-      stopRecognitionLoop();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRecognitionEnabled, cameraFullscreen]);
-
-  // ---------- Supabase helpers ----------
+  // ------------------ Supabase helpers (safe defaults) ------------------
   async function fetchCompanies() {
     const { data, error } = await supabase.from("companies").select("*").order("name");
     if (error) {
@@ -164,12 +198,17 @@ export default function App() {
     setCompanies(data || []);
   }
 
+  // fetch basic employees WITHOUT descriptors (for UI lists)
   async function fetchEmployees(companyId) {
     if (!companyId) {
       setEmployees([]);
       return;
     }
-    const { data, error } = await supabase.from("employees").select("*").eq("company_id", String(companyId));
+    const { data, error } = await supabase
+      .from("employees")
+      .select("id, name, role, company_id")
+      .eq("company_id", String(companyId))
+      .order("name");
     if (error) {
       console.error("fetchEmployees", error);
       setStatusMsg("Erro carregando funcionários");
@@ -178,11 +217,12 @@ export default function App() {
     setEmployees(data || []);
   }
 
+  // Fetch attendances with optional filters
   async function fetchAttendances(filters = {}) {
     try {
       let q = supabase
         .from("attendances")
-        .select("*,employees!inner(name)")
+        .select("*, employees!inner(name)")
         .order("attended_at", { ascending: false })
         .limit(1000);
       if (filters.company_id) q = q.eq("company_id", String(filters.company_id));
@@ -199,49 +239,35 @@ export default function App() {
     }
   }
 
-  // ---------- login handling (single hard-coded user) ----------
-  function handleLogin(e) {
-    e && e.preventDefault && e.preventDefault();
-    if (loginUsername === HARDCODED_USER.username && loginPassword === HARDCODED_USER.password) {
-      setUser({ name: HARDCODED_USER.name, username: HARDCODED_USER.username });
-      setLoginPassword("");
-      setLoginUsername("");
-      setRoute("dashboard");
-      setStatusMsg("Usuário autenticado");
-      // persist login
-      localStorage.setItem('usuarioLogado', 'true');
-    } else {
-      alert("Usuário ou senha inválidos");
+  // Fetch descriptors securely for the selected company (this will be protected by RLS policies)
+  async function fetchEmployeeDescriptors(companyId) {
+    if (!companyId) return [];
+    // We request only id, name, descriptors
+    const { data, error } = await supabase
+      .from("employees")
+      .select("id, name, descriptors")
+      .eq("company_id", String(companyId));
+    if (error) {
+      console.error("fetchEmployeeDescriptors", error);
+      setStatusMsg("Erro ao buscar descriptors");
+      return [];
     }
+    return data || [];
   }
 
-  function handleLogout() {
-    stopRecognitionLoop();
-    stopCamera();
-    setUser(null);
-    setRoute("login");
-    setStatusMsg("");
-    localStorage.removeItem('usuarioLogado');
-  }
-
-  // -------------------- NOVAS FUNÇÕES (melhorias de estabilidade) --------------------
-
-  // escolhe deviceId preferido (mais confiável que depender só de facingMode)
+  // ------------------ Camera helpers ------------------
   async function getPreferredDeviceId(preferredFacing = "environment") {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoInputs = devices.filter(d => d.kind === "videoinput");
       if (!videoInputs.length) return null;
 
-      // try to match device label if permission was already granted
       const labelMatch = videoInputs.find(d => {
         const label = (d.label || "").toLowerCase();
         if (preferredFacing === "user") return label.includes("front") || label.includes("facing front") || label.includes("user");
         return label.includes("back") || label.includes("rear") || label.includes("environment");
       });
       if (labelMatch) return labelMatch.deviceId;
-
-      // fallback heuristics
       return preferredFacing === "environment" ? videoInputs[videoInputs.length - 1].deviceId : videoInputs[0].deviceId;
     } catch (err) {
       console.warn("getPreferredDeviceId erro:", err);
@@ -249,7 +275,6 @@ export default function App() {
     }
   }
 
-  // adiciona listeners nas tracks para detectar ended/mute/unmute
   function attachTrackListeners(stream) {
     if (!stream) return;
     stream.getTracks().forEach((track) => {
@@ -261,7 +286,6 @@ export default function App() {
         setStatusMsg("Stream finalizado pelo dispositivo");
         stopRecognitionLoop();
         stopCamera();
-        // tentar reabrir automaticamente com tentativas limitadas
         retryOpenCamera(2, 700);
       });
 
@@ -277,7 +301,6 @@ export default function App() {
     });
   }
 
-  // consome alguns frames para "warmup" antes de começar a detecção (reduz detecções em frames vazios)
   async function warmUpVideoFrames(frames = 6, msBetween = 80) {
     if (!videoRef.current) return;
     const v = videoRef.current;
@@ -294,7 +317,6 @@ export default function App() {
     }
   }
 
-  // retry com backoff para reabrir a câmera
   async function retryOpenCamera(attempts = 3, initialDelayMs = 300) {
     let attempt = 0;
     while (attempt < attempts) {
@@ -313,8 +335,7 @@ export default function App() {
     return false;
   }
 
-  // -------------------- openCamera aprimorada --------------------
-  // aceita opts: { skipAutoStartRecognition, retrying }
+  // openCamera enhanced
   async function openCamera(opts = { skipAutoStartRecognition: false, retrying: false }) {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -322,11 +343,9 @@ export default function App() {
         throw new Error("getUserMedia não suportado");
       }
 
-      // stop old stream safely
       stopRecognitionLoop();
       stopCamera();
 
-      // resolve deviceId preferido (mais confiável que só facingMode)
       let constraints;
       const preferredDeviceId = await getPreferredDeviceId(facingMode);
       if (preferredDeviceId) {
@@ -371,7 +390,6 @@ export default function App() {
         const checkReady = () => {
           const v = videoRef.current;
           if (v && v.videoWidth > 0 && v.videoHeight > 0) {
-            console.log("📷 Vídeo pronto:", v.videoWidth, "x", v.videoHeight);
             resolve();
           } else {
             setTimeout(checkReady, 100);
@@ -380,7 +398,7 @@ export default function App() {
         checkReady();
       });
 
-      // Adjust canvas
+      // Adjust canvas to video size & respect ratio
       setTimeout(() => {
         const canvas = canvasRef.current;
         const v = videoRef.current;
@@ -388,45 +406,31 @@ export default function App() {
           const ratio = window.devicePixelRatio || 1;
           canvas.width = (v.videoWidth || v.clientWidth) * ratio;
           canvas.height = (v.videoHeight || v.clientHeight) * ratio;
-          canvas.style.width = "100vw";
-          canvas.style.height = "100vh";
+          const rect = v.getBoundingClientRect();
+          canvas.style.width = `${rect.width}px`;
+          canvas.style.height = `${rect.height}px`;
           const ctx = canvas.getContext('2d');
           if (ctx) ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
         }
       }, 350);
 
-      // warm up frames antes de começar detecção
       await warmUpVideoFrames(6, 60);
 
-      // Inicia o reconhecimento automático quando apropriado (attendance/fullscreen)
       if (!opts.skipAutoStartRecognition && (cameraFullscreen || route === 'attendance') && autoRecognitionEnabled) {
-        console.log(
-          "openCamera: faceapiLoaded=",
-          faceapiLoaded,
-          "selectedCompany=",
-          selectedCompany,
-          "stream ok=",
-          !!streamRef.current
-        );
-
         if (!selectedCompany) {
           setStatusMsg("Selecione a empresa antes de abrir a câmera");
           return;
         }
         if (!faceapiLoaded) {
           setStatusMsg("Aguarde carregamento dos modelos...");
-          // uma esperinha caso esteja carregando
           await new Promise((r) => setTimeout(r, 500));
         }
-
         if (!faceapiLoaded) {
           setStatusMsg("Modelos ainda não prontos");
           return;
         }
 
-        // Delay pequeno para garantir estabilidade
         setTimeout(() => {
-          console.log("▶️ Reconhecimento automático iniciado (após openCamera aprimorada)");
           prepareFaceMatcherAndStart().catch((e) => console.error("prepareFaceMatcherAndStart erro:", e));
         }, 250);
       }
@@ -439,11 +443,8 @@ export default function App() {
     }
   }
 
-  // -------------------- switchFacing aprimorado --------------------
   async function switchFacing() {
     setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
-
-    // Fecha stream atual antes de reabrir
     if (streamRef.current) {
       try {
         streamRef.current.getTracks().forEach((t) => t.stop());
@@ -453,14 +454,11 @@ export default function App() {
       streamRef.current = null;
       if (videoRef.current) videoRef.current.srcObject = null;
     }
-
-    // Reabre a câmera após pequeno atraso
     setTimeout(async () => {
       try {
         await openCamera();
       } catch (err) {
         console.error("Erro ao reabrir câmera:", err);
-        // fallback: tentar com retry
         retryOpenCamera(2, 400);
       }
     }, 350);
@@ -478,7 +476,7 @@ export default function App() {
     if (videoRef.current) videoRef.current.srcObject = null;
   }
 
-  // ---------- registration capture ----------
+  // ------------------ Registration capture ------------------
   async function captureDescriptorFromVideo(opts = { attempts: 3, inputSize: 128, scoreThreshold: 0.45 }) {
     if (!faceapiLoaded || !faceapi) {
       setStatusMsg("Modelos não carregados ainda");
@@ -489,7 +487,6 @@ export default function App() {
       return null;
     }
 
-    // tentativas rápidas para aumentar chance de boa captura e reduzir "lag" percebido
     for (let i = 0; i < opts.attempts; i++) {
       try {
         const options = new faceapi.TinyFaceDetectorOptions({ inputSize: opts.inputSize, scoreThreshold: opts.scoreThreshold });
@@ -503,7 +500,6 @@ export default function App() {
       } catch (err) {
         console.warn('Tentativa de captura falhou', err);
       }
-      // pequena pausa entre tentativas (sem bloquear UI)
       await new Promise((r) => setTimeout(r, 150));
     }
 
@@ -512,13 +508,11 @@ export default function App() {
 
   async function handleCaptureForRegister() {
     setStatusMsg("Capturando...");
-    // captura rápida e responsiva: se houver rosto retorna imediatamente
     const desc = await captureDescriptorFromVideo({ attempts: 4, inputSize: 128, scoreThreshold: 0.45 });
     if (!desc) {
       setStatusMsg("Nenhum rosto detectado. Tente novamente.");
       return;
     }
-    // adição imediata sem re-render pesado
     setCapturedDescriptors((prev) => {
       const updated = [...prev, desc];
       setStatusMsg("Captura realizada. Total: " + updated.length);
@@ -567,7 +561,7 @@ export default function App() {
     }
   }
 
-  // ---------- recognition setup and RAF loop (automatic when camera opens) ----------
+  // ------------------ Recognition setup and RAF loop ------------------
   async function prepareFaceMatcherAndStart() {
     if (!selectedCompany) {
       setStatusMsg('Selecione uma empresa');
@@ -578,23 +572,19 @@ export default function App() {
       return;
     }
 
-    // fetch employees once
-    const { data: emps, error: e } = await supabase.from("employees").select("*").eq("company_id", String(selectedCompany));
-    if (e) {
-      console.error(e);
-      setStatusMsg('Erro buscando funcionários');
-      return;
-    }
-    if (!emps?.length) {
-      setStatusMsg('Nenhum funcionário cadastrado');
+    // fetch employees basic list (for name mapping)
+    await fetchEmployees(selectedCompany);
+
+    // fetch descriptors securely (this SELECT must be permitted via RLS to the logged user)
+    const empsWithDescriptors = await fetchEmployeeDescriptors(selectedCompany);
+    if (!empsWithDescriptors || !empsWithDescriptors.length) {
+      setStatusMsg('Nenhum funcionário cadastrado com descriptors');
       return;
     }
 
-    setEmployees(emps);
-
-    // build map and matcher
+    // build matcher
     const idMap = {};
-    const labeled = emps.map((e2) => {
+    const labeled = empsWithDescriptors.map((e2) => {
       idMap[String(e2.id)] = e2.name;
       const descs = (e2.descriptors || []).map((d) => new Float32Array(d));
       return new faceapi.LabeledFaceDescriptors(String(e2.id), descs);
@@ -603,7 +593,6 @@ export default function App() {
     idNameMapRef.current = idMap;
     faceMatcherRef.current = new faceapi.FaceMatcher(labeled, MATCH_THRESHOLD);
 
-    // start RAF loop
     startRecognitionLoop();
   }
 
@@ -618,19 +607,17 @@ export default function App() {
       recognitionRaf.current = requestAnimationFrame(loop);
       if (!recognitionRunningRef.current) return;
       if (!videoRef.current || videoRef.current.paused || videoRef.current.ended) return;
-      if (timestamp - lastRun < (window.innerWidth <= 540 ? DETECTION_INTERVAL_MS - 200 : DETECTION_INTERVAL_MS)) return; // throttle
+      if (timestamp - lastRun < (window.innerWidth <= 540 ? DETECTION_INTERVAL_MS - 200 : DETECTION_INTERVAL_MS)) return;
       lastRun = timestamp;
 
       if (isProcessingRef.current) return;
       isProcessingRef.current = true;
 
       try {
-        // dynamic detector options: relax if no detections for a while
         let inputSize = 160;
         let scoreThreshold = 0.5;
         const lastDetAt = window._lastDetectionsAt || 0;
         if (Date.now() - lastDetAt > 7000) {
-          // sem detecções há >7s, relaxar para tentar identificar
           inputSize = 128;
           scoreThreshold = 0.45;
         }
@@ -650,12 +637,12 @@ export default function App() {
           return;
         }
 
-        // mark last detection time (used by dynamic options)
         window._lastDetectionsAt = Date.now();
 
         const matcher = faceMatcherRef.current;
         const idMap = idNameMapRef.current;
 
+        // process detections in sequence but avoid awaiting DB reads/inserts inside loop
         for (const det of detections) {
           const best = matcher.findBestMatch(det.descriptor);
           const label = best.label;
@@ -680,50 +667,44 @@ export default function App() {
 
           if (label !== 'unknown') {
             const matchedEmployeeId = label;
-            const lastSeen = lastSeenRef.current[matchedEmployeeId];
             const now = Date.now();
+            const lastSeen = lastSeenRef.current[matchedEmployeeId];
+
+            // local dedup check first
             if (lastSeen && now - lastSeen < DEDUP_MS) {
               setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
               continue;
             }
 
-            // check DB last record
-            const { data: last, error } = await supabase
-              .from("attendances")
-              .select("*")
-              .eq("employee_id", matchedEmployeeId)
-              .order("attended_at", { ascending: false })
-              .limit(1);
-
-            if (error) {
-              console.error("Erro verificando último registro", error);
+            // check local attendance cache (avoid DB read)
+            const cachedTs = localAttendanceCache.current[matchedEmployeeId];
+            const fiveMinutesAgo = Date.now() - DEDUP_MS;
+            if (cachedTs && cachedTs > fiveMinutesAgo) {
+              lastSeenRef.current[matchedEmployeeId] = now;
+              setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
+              setStatusMsg(`⚠️ ${idMap[matchedEmployeeId] || matchedEmployeeId} já registrado recentemente (cache)`);
               continue;
             }
 
-            const fiveMinutesAgo = new Date(Date.now() - DEDUP_MS);
-            if (!last || !last.length || new Date(last[0].attended_at) < fiveMinutesAgo) {
-              const { error: insertErr } = await supabase.from("attendances").insert([
-                { company_id: String(selectedCompany), employee_id: matchedEmployeeId, confidence: best.distance },
-              ]);
-              if (insertErr) {
-                console.error("Erro inserindo attendance", insertErr);
+            // insert attendance (fire-and-forget) and update caches immediately
+            const attendancePayload = { company_id: String(selectedCompany), employee_id: matchedEmployeeId, confidence: best.distance };
+            supabase.from("attendances").insert([attendancePayload]).then(({error}) => {
+              if (error) {
+                console.error("Erro inserindo attendance", error);
                 setStatusMsg("Erro ao salvar presença");
-              } else {
-                lastSeenRef.current[matchedEmployeeId] = now;
-                setStatusMsg(`✅ Presença registrada: ${idMap[matchedEmployeeId] || matchedEmployeeId}`);
-                setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
-                fetchAttendances({ company_id: selectedCompany });
               }
-            } else {
-              lastSeenRef.current[matchedEmployeeId] = now;
-              setStatusMsg(`⚠️ ${idMap[matchedEmployeeId] || matchedEmployeeId} já registrado nos últimos ${Math.round(DEDUP_MS / 60000)} min`);
-            }
+            }).catch((e) => console.error("insert catch", e));
+
+            lastSeenRef.current[matchedEmployeeId] = now;
+            localAttendanceCache.current[matchedEmployeeId] = Date.now();
+            setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
+            setStatusMsg(`✅ Presença registrada: ${idMap[matchedEmployeeId] || matchedEmployeeId}`);
+            // update history UI in background
+            fetchAttendances({ company_id: selectedCompany });
           }
         }
-
       } catch (err) {
         console.error('Erro no loop de reconhecimento', err);
-        // se houver erro grave por causa do stream, tentar reiniciar câmera (tentativa única)
         if (err && err.name && (err.name === 'NotReadableError' || err.name === 'TrackStartError' || err.name === 'OverconstrainedError')) {
           console.warn("Erro relacionado à câmera detectado no loop, tentando reabrir...");
           stopRecognitionLoop();
@@ -748,7 +729,7 @@ export default function App() {
     setStatusMsg('⏹️ Reconhecimento parado');
   }
 
-  // ---------- export XLSX ----------
+  // ------------------ export XLSX ------------------
   function exportAttendancesToExcel() {
     if (!attendances || attendances.length === 0) {
       alert("Sem registros");
@@ -766,9 +747,8 @@ export default function App() {
     XLSX.writeFile(wb, "presencas.xlsx");
   }
 
-  // ---------- helpers for history filters ----------
+  // ------------------ history filters helpers ------------------
   function applyHistoryFilter(range) {
-    // range: 'hour','day','week','month' or 'all'
     const now = new Date();
     let from = null;
     if (range === 'hour') from = new Date(now.getTime() - 1000 * 60 * 60);
@@ -788,13 +768,16 @@ export default function App() {
     applyHistoryFilter(val);
   }
 
-  // UI
+  // ------------------ UI ------------------
+  if (authLoading) {
+    return <div className="app-root"><div className="center-card card"><h3>Inicializando...</h3></div></div>;
+  }
+
   return (
     <div className="app-root">
       <header className="app-header">
         <div className="header-inner">
           <div className="brand">
-            {/* Substitua o caminho abaixo pelo caminho da sua logo */}
             <img src={logo} alt="Logo da Clínica" className="logo-clinica" />
             <div>
               <h1 className="title">R.R. Prevenção em Saúde</h1>
@@ -809,8 +792,8 @@ export default function App() {
 
             {user && (
               <>
-                <div className="user-pill">{user.name}</div>
-                <button className="btn" onClick={handleLogout}>Sair</button>
+                <div className="user-pill">{user.email || user.user_metadata?.full_name || user.id}</div>
+                <button className="btn" onClick={handleSignOut}>Sair</button>
               </>
             )}
           </div>
@@ -819,17 +802,16 @@ export default function App() {
 
       <main className="app-main">
         {!user ? (
-          // Login page
           <div className="card center-card">
             <h2>Login</h2>
-            <form onSubmit={handleLogin} style={{ width: "100%" }}>
+            <form onSubmit={handleSignIn} style={{ width: "100%" }}>
               <div className="form-row">
-                <label className="label">Usuário</label>
-                <input className="input" value={loginUsername} onChange={(e) => setLoginUsername(e.target.value)} />
+                <label className="label">E-mail</label>
+                <input className="input" value={email} onChange={(e) => setEmail(e.target.value)} />
               </div>
               <div className="form-row">
                 <label className="label">Senha</label>
-                <input className="input" type="password" value={loginPassword} onChange={(e) => setLoginPassword(e.target.value)} />
+                <input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
               </div>
               <div className="form-row">
                 <button className="btn primary" type="submit">Entrar</button>
@@ -842,47 +824,42 @@ export default function App() {
               {route === "dashboard" && (
                 <div className="card">
                   <h2>Dashboard 💻</h2>
-                  <br></br>
                   <div className="row gap">
                     <div className="col">
                       <label className="label">🏢 - Empresa </label>
-
                       <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
                         <option value="">-- selecione a empresa --</option>
                         {companies.map((c) => (
                           <option key={c.id} value={String(c.id)}>{c.name}</option>
                         ))}
-
                       </select>
 
                       <div style={{ marginTop: "15px", display: "flex", gap: "10px" }}>
                         <button
                           className="btn primary"
-                            onClick={() => {
-                              if (!selectedCompany) {
-                                alert("Selecione uma empresa antes de registrar presença");
-                                return;
-                              }
+                          onClick={() => {
+                            if (!selectedCompany) {
+                              alert("Selecione uma empresa antes de registrar presença");
+                              return;
+                            }
                             setCameraFullscreen(true);
                             openCamera();
-                            }}
+                          }}
                         >
                           Abrir Câmera
                         </button>
 
                         <button
                           className="btn"
-                            onClick={() => {
-                              fetchAttendances({ company_id: selectedCompany });
-                                setRoute("history");
-                            }}
+                          onClick={() => {
+                            fetchAttendances({ company_id: selectedCompany });
+                            setRoute("history");
+                          }}
                         >
                           Ver Histórico
                         </button>
                       </div>
-
                     </div>
-
 
                     <div className="col stats">
                       <div className="stat">
@@ -901,8 +878,6 @@ export default function App() {
               {route === "register" && (
                 <div className="card">
                   <h2>✚ Registrar Funcionário</h2>
-                  <br></br>
-
                   <div className="form-row">
                     <label>Empresa</label>
                     <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
@@ -921,46 +896,29 @@ export default function App() {
                     <input className="input" value={newDepartment} onChange={(e) => setNewDepartment(e.target.value)} />
                   </div>
 
-                  {/* camera preview */}
                   <div className="video-wrapper">
                     <video ref={videoRef} className="video" autoPlay muted playsInline />
                     <div className="capture-info">Capturas: {capturedDescriptors.length}</div>
                   </div>
 
                   <div className="form-row actions actions-centered">
-  <div className="btn-group btn-group-modern" role="toolbar" aria-label="Controles da câmera">
-    <button
-      className="btn-ghost cam-btn"
-      onClick={openCamera}
-      aria-label="Abrir câmera"
-      title="Abrir Câmera"
-    >
-      <span className="icon-large">🔍</span>
-      <span className="btn-label">Abrir</span>
-    </button>
+                    <div className="btn-group btn-group-modern" role="toolbar" aria-label="Controles da câmera">
+                      <button className="btn-ghost cam-btn" onClick={() => openCamera()} aria-label="Abrir câmera" title="Abrir Câmera">
+                        <span className="icon-large">🔍</span>
+                        <span className="btn-label">Abrir</span>
+                      </button>
 
-    <button
-      className="btn-ghost cam-btn"
-      onClick={() => { switchFacing(); }}
-      aria-label="Trocar câmera"
-      title="Trocar Câmera"
-    >
-      <span className="icon-large">🔁</span>
-      <span className="btn-label">Trocar</span>
-    </button>
+                      <button className="btn-ghost cam-btn" onClick={() => switchFacing()} aria-label="Trocar câmera" title="Trocar Câmera">
+                        <span className="icon-large">🔁</span>
+                        <span className="btn-label">Trocar</span>
+                      </button>
 
-    <button
-      className="btn-primary cam-btn"
-      onClick={handleCaptureForRegister}
-      aria-label="Capturar rosto"
-      title="Capturar Rosto"
-    >
-      <span className="icon-large">📸</span>
-      <span className="btn-label">Capturar</span>
-    </button>
-  </div>
-</div>
-
+                      <button className="btn-primary cam-btn" onClick={handleCaptureForRegister} aria-label="Capturar rosto" title="Capturar Rosto">
+                        <span className="icon-large">📸</span>
+                        <span className="btn-label">Capturar</span>
+                      </button>
+                    </div>
+                  </div>
 
                   <div className="form-row">
                     <button className="btn primary" onClick={saveNewEmployee}>Salvar Funcionário</button>
@@ -971,9 +929,6 @@ export default function App() {
               {route === "history" && (
                 <div className="card">
                   <h2>📋 Histórico</h2>
-
-
-                  {/* --- Filtro com ícone de lupa + combo box --- */}
                   <div className="filter-row" style={{ display:'flex', alignItems:'center', gap:'8px', margin:'12px 0' }}>
                     <span style={{ fontSize:'20px' }}>🔍</span>
                     <select id="filterSelect" style={{ padding:'6px 10px', borderRadius:'6px' }} onChange={handleFilterChange}>
@@ -985,13 +940,10 @@ export default function App() {
                     </select>
                   </div>
 
-
-
-                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
-                      <button className="btn" onClick={() => fetchAttendances({ company_id: selectedCompany })}>Atualizar</button>
-                      <button className="btn primary" onClick={exportAttendancesToExcel}>Exportar XLSX</button>
-                    </div>
-
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
+                    <button className="btn" onClick={() => fetchAttendances({ company_id: selectedCompany })}>Atualizar</button>
+                    <button className="btn primary" onClick={exportAttendancesToExcel}>Exportar XLSX</button>
+                  </div>
 
                   <div className="table-wrap">
                     <table className="table">
@@ -1007,22 +959,19 @@ export default function App() {
                   </div>
                 </div>
               )}
-            </section>
 
+            </section>
           </div>
         )}
       </main>
 
-      {/* Fullscreen camera view overlay (when cameraFullscreen = true) */}
       {user && cameraFullscreen && (
         <div className="camera-fullscreen">
           <video ref={videoRef} className="video-fullscreen" autoPlay muted playsInline />
-          <canvas ref={canvasRef} className="overlay-canvas" />
+          <canvas ref={canvasRef} className="overlay-canvas" style={{ display: showOverlay ? 'block' : 'none' }} />
 
-          {/* close button top-right (icon) */}
           <button className="camera-close" aria-label="Fechar" onClick={() => { stopRecognitionLoop(); stopCamera(); setCameraFullscreen(false); }}>✖</button>
 
-          {/* recent matches top-left */}
           <div className="recent-matches left">
             <h4>Últimos registros</h4>
             <ul>
@@ -1032,7 +981,6 @@ export default function App() {
             </ul>
           </div>
 
-          {/* floating controls at bottom center: keep only switch camera */}
           <div className="camera-controls centered">
             <button
               className="btn-switch-camera glass"
@@ -1045,53 +993,26 @@ export default function App() {
               🔁
             </button>
           </div>
-
         </div>
       )}
 
-{user && !cameraFullscreen && (
-  <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
+      {user && !cameraFullscreen && (
+        <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
+          <button className={`nav-item ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}>
+            <img src={casaIcon} alt="Dashboard" className="nav-icon nav-icon--dashboard" onError={(e) => { e.currentTarget.style.opacity = 0.5; }} />
+          </button>
 
-    <button
-      className={`nav-item ${route === "dashboard" ? "active" : ""}`}
-      onClick={() => setRoute("dashboard")}
-    >
-      <img
-        src={casaIcon}
-        alt="Dashboard"
-        className="nav-icon nav-icon--dashboard"
-        onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
-      />
-    </button>
+          <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}>
+            <img src={funcionarioIcon} alt="Registrar" className="nav-icon nav-icon--registerr" onError={(e) => { e.currentTarget.style.opacity = 0.5; }} />
+          </button>
 
-    <button
-      className={`nav-item ${route === "register" ? "active" : ""}`}
-      onClick={() => { setRoute("register"); fetchCompanies(); }}
-    >
-      <img
-        src={funcionarioIcon}
-        alt="Registrar"
-        className="nav-icon nav-icon--registerr"
-        onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
-      />
-    </button>
+          <button className={`nav-item ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}>
+            <img src={historicoIcon} alt="Histórico" className="nav-icon nav-icon--history" onError={(e) => { e.currentTarget.style.opacity = 0.5; }} />
+          </button>
+        </div>
+      )}
 
-    <button
-      className={`nav-item ${route === "history" ? "active" : ""}`}
-      onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}
-    >
-      <img
-        src={historicoIcon}
-        alt="Histórico"
-        className="nav-icon nav-icon--history"
-        onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
-      />
-    </button>
-
-  </div>
-)}
-
-
-</div>
-);
+      <div className="status-bar">{statusMsg}</div>
+    </div>
+  );
 }
