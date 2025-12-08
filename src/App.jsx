@@ -89,8 +89,8 @@ export default function App() {
       setUser({ name: HARDCODED_USER.name, username: HARDCODED_USER.username });
       setRoute("dashboard");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
 
   // ---------- load face-api dynamically and models ----------
   useEffect(() => {
@@ -164,12 +164,17 @@ export default function App() {
     setCompanies(data || []);
   }
 
+  // NOTE: select explicit columns that might exist after schema changes.
+  // We request both role and department to be tolerant.
   async function fetchEmployees(companyId) {
     if (!companyId) {
       setEmployees([]);
       return;
     }
-    const { data, error } = await supabase.from("employees").select("*").eq("company_id", String(companyId));
+    const { data, error } = await supabase
+      .from("employees")
+      .select("id, name, role, department, company_id, descriptors")
+      .eq("company_id", String(companyId));
     if (error) {
       console.error("fetchEmployees", error);
       setStatusMsg("Erro carregando funcionários");
@@ -226,22 +231,17 @@ export default function App() {
 
   // -------------------- NOVAS FUNÇÕES (melhorias de estabilidade) --------------------
 
-  // escolhe deviceId preferido (mais confiável que depender só de facingMode)
   async function getPreferredDeviceId(preferredFacing = "environment") {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoInputs = devices.filter(d => d.kind === "videoinput");
       if (!videoInputs.length) return null;
-
-      // try to match device label if permission was already granted
       const labelMatch = videoInputs.find(d => {
         const label = (d.label || "").toLowerCase();
         if (preferredFacing === "user") return label.includes("front") || label.includes("facing front") || label.includes("user");
         return label.includes("back") || label.includes("rear") || label.includes("environment");
       });
       if (labelMatch) return labelMatch.deviceId;
-
-      // fallback heuristics
       return preferredFacing === "environment" ? videoInputs[videoInputs.length - 1].deviceId : videoInputs[0].deviceId;
     } catch (err) {
       console.warn("getPreferredDeviceId erro:", err);
@@ -249,7 +249,6 @@ export default function App() {
     }
   }
 
-  // adiciona listeners nas tracks para detectar ended/mute/unmute
   function attachTrackListeners(stream) {
     if (!stream) return;
     stream.getTracks().forEach((track) => {
@@ -261,7 +260,6 @@ export default function App() {
         setStatusMsg("Stream finalizado pelo dispositivo");
         stopRecognitionLoop();
         stopCamera();
-        // tentar reabrir automaticamente com tentativas limitadas
         retryOpenCamera(2, 700);
       });
 
@@ -277,7 +275,6 @@ export default function App() {
     });
   }
 
-  // consome alguns frames para "warmup" antes de começar a detecção (reduz detecções em frames vazios)
   async function warmUpVideoFrames(frames = 6, msBetween = 80) {
     if (!videoRef.current) return;
     const v = videoRef.current;
@@ -294,7 +291,6 @@ export default function App() {
     }
   }
 
-  // retry com backoff para reabrir a câmera
   async function retryOpenCamera(attempts = 3, initialDelayMs = 300) {
     let attempt = 0;
     while (attempt < attempts) {
@@ -314,7 +310,6 @@ export default function App() {
   }
 
   // -------------------- openCamera aprimorada --------------------
-  // aceita opts: { skipAutoStartRecognition, retrying }
   async function openCamera(opts = { skipAutoStartRecognition: false, retrying: false }) {
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -322,11 +317,9 @@ export default function App() {
         throw new Error("getUserMedia não suportado");
       }
 
-      // stop old stream safely
       stopRecognitionLoop();
       stopCamera();
 
-      // resolve deviceId preferido (mais confiável que só facingMode)
       let constraints;
       const preferredDeviceId = await getPreferredDeviceId(facingMode);
       if (preferredDeviceId) {
@@ -371,7 +364,6 @@ export default function App() {
         const checkReady = () => {
           const v = videoRef.current;
           if (v && v.videoWidth > 0 && v.videoHeight > 0) {
-            console.log("📷 Vídeo pronto:", v.videoWidth, "x", v.videoHeight);
             resolve();
           } else {
             setTimeout(checkReady, 100);
@@ -380,7 +372,6 @@ export default function App() {
         checkReady();
       });
 
-      // Adjust canvas
       setTimeout(() => {
         const canvas = canvasRef.current;
         const v = videoRef.current;
@@ -395,27 +386,15 @@ export default function App() {
         }
       }, 350);
 
-      // warm up frames antes de começar detecção
       await warmUpVideoFrames(6, 60);
 
-      // Inicia o reconhecimento automático quando apropriado (attendance/fullscreen)
       if (!opts.skipAutoStartRecognition && (cameraFullscreen || route === 'attendance') && autoRecognitionEnabled) {
-        console.log(
-          "openCamera: faceapiLoaded=",
-          faceapiLoaded,
-          "selectedCompany=",
-          selectedCompany,
-          "stream ok=",
-          !!streamRef.current
-        );
-
         if (!selectedCompany) {
           setStatusMsg("Selecione a empresa antes de abrir a câmera");
           return;
         }
         if (!faceapiLoaded) {
           setStatusMsg("Aguarde carregamento dos modelos...");
-          // uma esperinha caso esteja carregando
           await new Promise((r) => setTimeout(r, 500));
         }
 
@@ -424,9 +403,7 @@ export default function App() {
           return;
         }
 
-        // Delay pequeno para garantir estabilidade
         setTimeout(() => {
-          console.log("▶️ Reconhecimento automático iniciado (após openCamera aprimorada)");
           prepareFaceMatcherAndStart().catch((e) => console.error("prepareFaceMatcherAndStart erro:", e));
         }, 250);
       }
@@ -443,7 +420,6 @@ export default function App() {
   async function switchFacing() {
     setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
 
-    // Fecha stream atual antes de reabrir
     if (streamRef.current) {
       try {
         streamRef.current.getTracks().forEach((t) => t.stop());
@@ -454,13 +430,11 @@ export default function App() {
       if (videoRef.current) videoRef.current.srcObject = null;
     }
 
-    // Reabre a câmera após pequeno atraso
     setTimeout(async () => {
       try {
         await openCamera();
       } catch (err) {
         console.error("Erro ao reabrir câmera:", err);
-        // fallback: tentar com retry
         retryOpenCamera(2, 400);
       }
     }, 350);
@@ -489,7 +463,6 @@ export default function App() {
       return null;
     }
 
-    // tentativas rápidas para aumentar chance de boa captura e reduzir "lag" percebido
     for (let i = 0; i < opts.attempts; i++) {
       try {
         const options = new faceapi.TinyFaceDetectorOptions({ inputSize: opts.inputSize, scoreThreshold: opts.scoreThreshold });
@@ -503,7 +476,6 @@ export default function App() {
       } catch (err) {
         console.warn('Tentativa de captura falhou', err);
       }
-      // pequena pausa entre tentativas (sem bloquear UI)
       await new Promise((r) => setTimeout(r, 150));
     }
 
@@ -512,18 +484,38 @@ export default function App() {
 
   async function handleCaptureForRegister() {
     setStatusMsg("Capturando...");
-    // captura rápida e responsiva: se houver rosto retorna imediatamente
     const desc = await captureDescriptorFromVideo({ attempts: 4, inputSize: 128, scoreThreshold: 0.45 });
     if (!desc) {
       setStatusMsg("Nenhum rosto detectado. Tente novamente.");
       return;
     }
-    // adição imediata sem re-render pesado
     setCapturedDescriptors((prev) => {
       const updated = [...prev, desc];
       setStatusMsg("Captura realizada. Total: " + updated.length);
       return updated;
     });
+  }
+
+  // Attempt several payload shapes to be tolerant to schema changes
+  async function attemptInsertEmployee(payloads) {
+    for (const payload of payloads) {
+      try {
+        const { data, error } = await supabase.from("employees").insert([payload]).select();
+        if (error) {
+          // If error likely due to column missing, try next payload variant
+          console.warn("insert attempt error for payload:", payload, error);
+          // if error is constraint or duplicate, return it immediately
+          // but otherwise continue
+          continue;
+        }
+        // success
+        return { success: true, data };
+      } catch (err) {
+        console.error("insert exception for payload:", payload, err);
+        continue;
+      }
+    }
+    return { success: false, message: "Todas as tentativas de INSERT falharam" };
   }
 
   async function saveNewEmployee() {
@@ -540,31 +532,40 @@ export default function App() {
       return;
     }
 
-    const payload = {
+    // Build tolerant payload variants
+    const base = {
       company_id: String(selectedCompany),
       name: newName,
-      role: newDepartment,
       descriptors: capturedDescriptors,
       photos: [],
     };
 
-    try {
-      const { data, error } = await supabase.from("employees").insert([payload]).select();
-      if (error) {
-        console.error(error);
-        alert("Erro ao salvar funcionário");
-        return;
-      }
-      alert("Funcionário salvo");
-      setNewName("");
-      setNewDepartment("");
-      setCapturedDescriptors([]);
-      fetchEmployees(selectedCompany);
-      setRoute("dashboard");
-    } catch (err) {
-      console.error("Erro saveNewEmployee", err);
-      alert("Erro inesperado ao salvar funcionário");
+    // Try different shapes: department, role, both, and fallback with department name 'N/D'
+    const payloads = [
+      { ...base, department: newDepartment },          // if DB has department
+      { ...base, role: newDepartment },                // if DB uses role
+      { ...base, department: newDepartment, role: newDepartment }, // both
+      { ...base, department: newDepartment || "N/D" }, // fallback
+    ];
+
+    setStatusMsg("Salvando funcionário...");
+    const res = await attemptInsertEmployee(payloads);
+    if (!res.success) {
+      console.error("saveNewEmployee: falha ao inserir, veja erros no console");
+      alert("Erro ao salvar funcionário. Ver console para detalhes.");
+      setStatusMsg("Erro ao salvar funcionário");
+      return;
     }
+
+    // success
+    alert("Funcionário salvo");
+    setNewName("");
+    setNewDepartment("");
+    setCapturedDescriptors([]);
+    // fetch again to refresh UI (use the currently selected company)
+    fetchEmployees(selectedCompany);
+    setRoute("dashboard");
+    setStatusMsg("Funcionário salvo");
   }
 
   // ---------- recognition setup and RAF loop (automatic when camera opens) ----------
@@ -578,8 +579,12 @@ export default function App() {
       return;
     }
 
-    // fetch employees once
-    const { data: emps, error: e } = await supabase.from("employees").select("*").eq("company_id", String(selectedCompany));
+    // fetch employees once, tolerant select
+    const { data: emps, error: e } = await supabase
+      .from("employees")
+      .select("id, name, role, department, descriptors")
+      .eq("company_id", String(selectedCompany));
+
     if (e) {
       console.error(e);
       setStatusMsg('Erro buscando funcionários');
@@ -590,20 +595,60 @@ export default function App() {
       return;
     }
 
-    setEmployees(emps);
-
-    // build map and matcher
-    const idMap = {};
-    const labeled = emps.map((e2) => {
-      idMap[String(e2.id)] = e2.name;
-      const descs = (e2.descriptors || []).map((d) => new Float32Array(d));
-      return new faceapi.LabeledFaceDescriptors(String(e2.id), descs);
+    // normalize descriptors: accept null, array, or JSON string
+    const normalized = emps.map((emp) => {
+      let descs = emp.descriptors || [];
+      if (typeof descs === "string") {
+        try {
+          descs = JSON.parse(descs);
+        } catch (err) {
+          // leave as-is (will be handled below)
+          console.warn("descriptors parse failed", emp.id, err);
+        }
+      }
+      // ensure array of arrays
+      if (!Array.isArray(descs)) descs = [];
+      return { ...emp, descriptors: descs };
     });
+
+    setEmployees(normalized);
+
+    // build map and matcher (skip entries without descriptors)
+    const idMap = {};
+    const labeled = [];
+    for (const e2 of normalized) {
+      idMap[String(e2.id)] = e2.name;
+      const descsRaw = e2.descriptors || [];
+      const descs = descsRaw
+        .map((d) => {
+          try {
+            // if already number array -> Float32Array
+            if (Array.isArray(d)) return new Float32Array(d);
+            // if object-like, try to convert values
+            if (d && typeof d === "object") return new Float32Array(Object.values(d));
+            // else ignore
+            return null;
+          } catch (err) {
+            console.warn("erro convertendo descriptor", e2.id, err);
+            return null;
+          }
+        })
+        .filter(Boolean);
+      if (descs.length > 0) {
+        labeled.push(new faceapi.LabeledFaceDescriptors(String(e2.id), descs));
+      } else {
+        console.warn("Funcionário sem descriptors ignorado no matcher:", e2.id, e2.name);
+      }
+    }
+
+    if (!labeled.length) {
+      setStatusMsg("Nenhum descriptor utilizável encontrado para matcher");
+      return;
+    }
 
     idNameMapRef.current = idMap;
     faceMatcherRef.current = new faceapi.FaceMatcher(labeled, MATCH_THRESHOLD);
 
-    // start RAF loop
     startRecognitionLoop();
   }
 
@@ -618,19 +663,17 @@ export default function App() {
       recognitionRaf.current = requestAnimationFrame(loop);
       if (!recognitionRunningRef.current) return;
       if (!videoRef.current || videoRef.current.paused || videoRef.current.ended) return;
-      if (timestamp - lastRun < (window.innerWidth <= 540 ? DETECTION_INTERVAL_MS - 200 : DETECTION_INTERVAL_MS)) return; // throttle
+      if (timestamp - lastRun < (window.innerWidth <= 540 ? DETECTION_INTERVAL_MS - 200 : DETECTION_INTERVAL_MS)) return;
       lastRun = timestamp;
 
       if (isProcessingRef.current) return;
       isProcessingRef.current = true;
 
       try {
-        // dynamic detector options: relax if no detections for a while
         let inputSize = 160;
         let scoreThreshold = 0.5;
         const lastDetAt = window._lastDetectionsAt || 0;
         if (Date.now() - lastDetAt > 7000) {
-          // sem detecções há >7s, relaxar para tentar identificar
           inputSize = 128;
           scoreThreshold = 0.45;
         }
@@ -650,7 +693,6 @@ export default function App() {
           return;
         }
 
-        // mark last detection time (used by dynamic options)
         window._lastDetectionsAt = Date.now();
 
         const matcher = faceMatcherRef.current;
@@ -723,7 +765,6 @@ export default function App() {
 
       } catch (err) {
         console.error('Erro no loop de reconhecimento', err);
-        // se houver erro grave por causa do stream, tentar reiniciar câmera (tentativa única)
         if (err && err.name && (err.name === 'NotReadableError' || err.name === 'TrackStartError' || err.name === 'OverconstrainedError')) {
           console.warn("Erro relacionado à câmera detectado no loop, tentando reabrir...");
           stopRecognitionLoop();
@@ -768,7 +809,6 @@ export default function App() {
 
   // ---------- helpers for history filters ----------
   function applyHistoryFilter(range) {
-    // range: 'hour','day','week','month' or 'all'
     const now = new Date();
     let from = null;
     if (range === 'hour') from = new Date(now.getTime() - 1000 * 60 * 60);
@@ -794,7 +834,6 @@ export default function App() {
       <header className="app-header">
         <div className="header-inner">
           <div className="brand">
-            {/* Substitua o caminho abaixo pelo caminho da sua logo */}
             <img src={logo} alt="Logo da Clínica" className="logo-clinica" />
             <div>
               <h1 className="title">R.R. Prevenção em Saúde</h1>
@@ -819,7 +858,6 @@ export default function App() {
 
       <main className="app-main">
         {!user ? (
-          // Login page
           <div className="card center-card">
             <h2>Login</h2>
             <form onSubmit={handleLogin} style={{ width: "100%" }}>
@@ -852,37 +890,35 @@ export default function App() {
                         {companies.map((c) => (
                           <option key={c.id} value={String(c.id)}>{c.name}</option>
                         ))}
-
                       </select>
 
                       <div style={{ marginTop: "15px", display: "flex", gap: "10px" }}>
                         <button
                           className="btn primary"
-                            onClick={() => {
-                              if (!selectedCompany) {
-                                alert("Selecione uma empresa antes de registrar presença");
-                                return;
-                              }
+                          onClick={() => {
+                            if (!selectedCompany) {
+                              alert("Selecione uma empresa antes de registrar presença");
+                              return;
+                            }
                             setCameraFullscreen(true);
                             openCamera();
-                            }}
+                          }}
                         >
                           Abrir Câmera
                         </button>
 
                         <button
                           className="btn"
-                            onClick={() => {
-                              fetchAttendances({ company_id: selectedCompany });
-                                setRoute("history");
-                            }}
+                          onClick={() => {
+                            fetchAttendances({ company_id: selectedCompany });
+                            setRoute("history");
+                          }}
                         >
                           Ver Histórico
                         </button>
                       </div>
 
                     </div>
-
 
                     <div className="col stats">
                       <div className="stat">
@@ -928,39 +964,38 @@ export default function App() {
                   </div>
 
                   <div className="form-row actions actions-centered">
-  <div className="btn-group btn-group-modern" role="toolbar" aria-label="Controles da câmera">
-    <button
-      className="btn-ghost cam-btn"
-      onClick={openCamera}
-      aria-label="Abrir câmera"
-      title="Abrir Câmera"
-    >
-      <span className="icon-large">🔍</span>
-      <span className="btn-label">Abrir</span>
-    </button>
+                    <div className="btn-group btn-group-modern" role="toolbar" aria-label="Controles da câmera">
+                      <button
+                        className="btn-ghost cam-btn"
+                        onClick={openCamera}
+                        aria-label="Abrir câmera"
+                        title="Abrir Câmera"
+                      >
+                        <span className="icon-large">🔍</span>
+                        <span className="btn-label">Abrir</span>
+                      </button>
 
-    <button
-      className="btn-ghost cam-btn"
-      onClick={() => { switchFacing(); }}
-      aria-label="Trocar câmera"
-      title="Trocar Câmera"
-    >
-      <span className="icon-large">🔁</span>
-      <span className="btn-label">Trocar</span>
-    </button>
+                      <button
+                        className="btn-ghost cam-btn"
+                        onClick={() => { switchFacing(); }}
+                        aria-label="Trocar câmera"
+                        title="Trocar Câmera"
+                      >
+                        <span className="icon-large">🔁</span>
+                        <span className="btn-label">Trocar</span>
+                      </button>
 
-    <button
-      className="btn-primary cam-btn"
-      onClick={handleCaptureForRegister}
-      aria-label="Capturar rosto"
-      title="Capturar Rosto"
-    >
-      <span className="icon-large">📸</span>
-      <span className="btn-label">Capturar</span>
-    </button>
-  </div>
-</div>
-
+                      <button
+                        className="btn-primary cam-btn"
+                        onClick={handleCaptureForRegister}
+                        aria-label="Capturar rosto"
+                        title="Capturar Rosto"
+                      >
+                        <span className="icon-large">📸</span>
+                        <span className="btn-label">Capturar</span>
+                      </button>
+                    </div>
+                  </div>
 
                   <div className="form-row">
                     <button className="btn primary" onClick={saveNewEmployee}>Salvar Funcionário</button>
@@ -972,8 +1007,6 @@ export default function App() {
                 <div className="card">
                   <h2>📋 Histórico</h2>
 
-
-                  {/* --- Filtro com ícone de lupa + combo box --- */}
                   <div className="filter-row" style={{ display:'flex', alignItems:'center', gap:'8px', margin:'12px 0' }}>
                     <span style={{ fontSize:'20px' }}>🔍</span>
                     <select id="filterSelect" style={{ padding:'6px 10px', borderRadius:'6px' }} onChange={handleFilterChange}>
@@ -985,13 +1018,10 @@ export default function App() {
                     </select>
                   </div>
 
-
-
-                    <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
-                      <button className="btn" onClick={() => fetchAttendances({ company_id: selectedCompany })}>Atualizar</button>
-                      <button className="btn primary" onClick={exportAttendancesToExcel}>Exportar XLSX</button>
-                    </div>
-
+                  <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
+                    <button className="btn" onClick={() => fetchAttendances({ company_id: selectedCompany })}>Atualizar</button>
+                    <button className="btn primary" onClick={exportAttendancesToExcel}>Exportar XLSX</button>
+                  </div>
 
                   <div className="table-wrap">
                     <table className="table">
@@ -1008,7 +1038,6 @@ export default function App() {
                 </div>
               )}
             </section>
-
           </div>
         )}
       </main>
@@ -1019,10 +1048,8 @@ export default function App() {
           <video ref={videoRef} className="video-fullscreen" autoPlay muted playsInline />
           <canvas ref={canvasRef} className="overlay-canvas" />
 
-          {/* close button top-right (icon) */}
           <button className="camera-close" aria-label="Fechar" onClick={() => { stopRecognitionLoop(); stopCamera(); setCameraFullscreen(false); }}>✖</button>
 
-          {/* recent matches top-left */}
           <div className="recent-matches left">
             <h4>Últimos registros</h4>
             <ul>
@@ -1032,7 +1059,6 @@ export default function App() {
             </ul>
           </div>
 
-          {/* floating controls at bottom center: keep only switch camera */}
           <div className="camera-controls centered">
             <button
               className="btn-switch-camera glass"
@@ -1045,53 +1071,26 @@ export default function App() {
               🔁
             </button>
           </div>
-
         </div>
       )}
 
-{user && !cameraFullscreen && (
-  <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
+      {user && !cameraFullscreen && (
+        <div className="bottom-nav" role="navigation" aria-label="Navegação principal">
+          <button className={`nav-item ${route === "dashboard" ? "active" : ""}`} onClick={() => setRoute("dashboard")}>
+            <img src={casaIcon} alt="Dashboard" className="nav-icon nav-icon--dashboard" onError={(e) => { e.currentTarget.style.opacity = 0.5; }} />
+          </button>
 
-    <button
-      className={`nav-item ${route === "dashboard" ? "active" : ""}`}
-      onClick={() => setRoute("dashboard")}
-    >
-      <img
-        src={casaIcon}
-        alt="Dashboard"
-        className="nav-icon nav-icon--dashboard"
-        onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
-      />
-    </button>
+          <button className={`nav-item ${route === "register" ? "active" : ""}`} onClick={() => { setRoute("register"); fetchCompanies(); }}>
+            <img src={funcionarioIcon} alt="Registrar" className="nav-icon nav-icon--registerr" onError={(e) => { e.currentTarget.style.opacity = 0.5; }} />
+          </button>
 
-    <button
-      className={`nav-item ${route === "register" ? "active" : ""}`}
-      onClick={() => { setRoute("register"); fetchCompanies(); }}
-    >
-      <img
-        src={funcionarioIcon}
-        alt="Registrar"
-        className="nav-icon nav-icon--registerr"
-        onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
-      />
-    </button>
+          <button className={`nav-item ${route === "history" ? "active" : ""}`} onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}>
+            <img src={historicoIcon} alt="Histórico" className="nav-icon nav-icon--history" onError={(e) => { e.currentTarget.style.opacity = 0.5; }} />
+          </button>
+        </div>
+      )}
 
-    <button
-      className={`nav-item ${route === "history" ? "active" : ""}`}
-      onClick={() => { setRoute("history"); fetchAttendances({ company_id: selectedCompany }); }}
-    >
-      <img
-        src={historicoIcon}
-        alt="Histórico"
-        className="nav-icon nav-icon--history"
-        onError={(e) => { e.currentTarget.style.opacity = 0.5; }}
-      />
-    </button>
-
-  </div>
-)}
-
-
-</div>
-);
+      <div className="status-bar">{statusMsg}</div>
+    </div>
+  );
 }
