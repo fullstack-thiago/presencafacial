@@ -1248,8 +1248,8 @@ export default function App() {
                   </div>
 
                   <div className="form-row" style={{ display: 'flex', gap: 8 }}>
-                    <button className="btn primary" onClick={saveNewEmployee}>{editEmployeeId ? "Salvar alterações" : "Salvar Funcionário"}</button>
-                    {editEmployeeId && <button className="btn" onClick={() => { handleCancelEdit(); setRoute("dashboard"); }}>Cancelar edição</button>}
+                    <button className="btn primary" onClick={saveNewEmployee}>{editEmployeeId ? "Salvar" : "Salvar Funcionário"}</button>
+                    {editEmployeeId && <button className="btn" onClick={() => { handleCancelEdit(); setRoute("dashboard"); }}>Cancelar</button>}
                   </div>
                 </div>
               )}
