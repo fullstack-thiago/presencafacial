@@ -1116,7 +1116,7 @@ export default function App() {
 {/* New container: Registered employees list */}
 <div className="card">
   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-    <h3 style={{ margin: 0, marginLeft: '15px'}}>👨‍💼</h3>
+    <h3 style={{ margin: 0, marginLeft: '10px'}}>👨‍💼</h3>
 
     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
       <input
