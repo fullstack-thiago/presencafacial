@@ -1001,11 +1001,11 @@ export default function App() {
 
               {route === "register" && (
                 <div className="card">
-                  <h2>✚ Registrar Funcionário</h2>
+                  <h2>Registrar Funcionário</h2>
                   <br />
 
                   <div className="form-row">
-                    <label>Empresa</label>
+                    <label>Empresa do Funcionário</label>
                     <select className="select" value={selectedCompany || ""} onChange={(e) => { const v = e.target.value || null; setSelectedCompany(v); fetchEmployees(v); }}>
                       <option value="">-- selecione a empresa --</option>
                       {companies.map((c) => (<option key={c.id} value={String(c.id)}>{c.name}</option>))}
@@ -1013,12 +1013,12 @@ export default function App() {
                   </div>
 
                   <div className="form-row">
-                    <label>Nome</label>
+                    <label>Nome do Funcionário</label>
                     <input className="input" value={newName} onChange={(e) => setNewName(e.target.value)} />
                   </div>
 
                   <div className="form-row">
-                    <label>Departamento</label>
+                    <label>Departamento do Funcionário</label>
                     <input className="input" value={newDepartment} onChange={(e) => setNewDepartment(e.target.value)} />
                   </div>
 
@@ -1030,20 +1030,24 @@ export default function App() {
 
                   <div className="form-row actions actions-centered">
                     <div className="btn-group btn-group-modern" role="toolbar" aria-label="Controles da câmera">
-                      <button className="btn-ghost cam-btn" onClick={openCamera} aria-label="Abrir câmera" title="Abrir Câmera">
-                        <span className="icon-large">🔍</span>
-                        <span className="btn-label">Abrir</span>
-                      </button>
-
                       <button className="btn-ghost cam-btn" onClick={() => { switchFacing(); }} aria-label="Trocar câmera" title="Trocar Câmera">
-                        <span className="icon-large">🔁</span>
-                        <span className="btn-label">Trocar</span>
+                        <span className="icon-large">🔄</span>
+                        <span className="btn-label"></span>
                       </button>
-
+                      
                       <button className="btn-primary cam-btn" onClick={handleCaptureForRegister} aria-label="Capturar rosto" title="Capturar Rosto">
                         <span className="icon-large">📸</span>
-                        <span className="btn-label">Capturar</span>
+                        <span className="btn-label"></span>
                       </button>
+
+                      <button className="btn-ghost cam-btn" onClick={openCamera} aria-label="Abrir câmera" title="Abrir Câmera">
+                        <span className="icon-large">🎥</span>
+                        <span className="btn-label"></span>
+                      </button>
+
+                      
+
+                      
                     </div>
                   </div>
 
