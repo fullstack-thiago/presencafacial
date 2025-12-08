@@ -77,6 +77,11 @@ export default function App() {
   const lastSeenRef = useRef({}); // local dedup map: {employeeId: timestamp}
   const localAttendanceCache = useRef({}); // cache last attendance timestamp per employeeId
 
+  // device rotation helpers
+  const videoInputIdsRef = useRef([]); // array of deviceIds
+  const currentDeviceIndexRef = useRef(-1);
+  const switchingDeviceRef = useRef(false);
+
   // ------------------ auth handling ------------------
   useEffect(() => {
     let mounted = true;
@@ -177,12 +182,13 @@ export default function App() {
     }
     loadFaceApiAndModels();
     fetchCompanies();
+    refreshVideoInputs();
 
     // device change listener (hot-plug cameras)
     function onDeviceChange() {
       console.log("devicechange detected");
       setStatusMsg("Mudança de dispositivos detectada, verificando câmera...");
-      // try to reopen camera if we had one open
+      refreshVideoInputs();
       if (streamRef.current) {
         retryOpenCamera(2, 400);
       }
@@ -235,7 +241,7 @@ export default function App() {
     }
     const { data, error } = await supabase
       .from("employees")
-      .select("id, name, role, company_id")
+      .select("id, name, department, company_id")
       .eq("company_id", String(companyId))
       .order("name");
     if (error) {
@@ -246,12 +252,13 @@ export default function App() {
     setEmployees(data || []);
   }
 
-  // Fetch attendances with optional filters
+  // Fetch attendances with optional filters; include employee (name, department) and company (name)
   async function fetchAttendances(filters = {}) {
     try {
       let q = supabase
         .from("attendances")
-        .select("*, employees!inner(name)")
+        // request joined fields: employees (name, department), companies (name)
+        .select("id,attended_at,confidence, employee_id, company_id, employees(name,department), companies(name)")
         .order("attended_at", { ascending: false })
         .limit(1000);
       if (filters.company_id) q = q.eq("company_id", String(filters.company_id));
@@ -259,9 +266,19 @@ export default function App() {
       if (filters.gte_attended_at) q = q.gte('attended_at', filters.gte_attended_at.toISOString());
       const { data, error } = await q;
       if (error) {
-        console.error(error);
+        console.error("fetchAttendances error", error);
       } else {
-        setAttendances(data || []);
+        // normalize for UI
+        const normalized = (data || []).map((r) => ({
+          id: r.id,
+          employee_id: r.employee_id,
+          employee_name: r.employees?.name || null,
+          department: r.employees?.department || null,
+          company_name: r.companies?.name || null,
+          attended_at: r.attended_at,
+          confidence: r.confidence,
+        }));
+        setAttendances(normalized);
       }
     } catch (err) {
       console.error("Erro fetchAttendances", err);
@@ -285,23 +302,35 @@ export default function App() {
   }
 
   // ------------------ Camera helpers ------------------
-  async function getPreferredDeviceId(preferredFacing = "environment") {
+  async function refreshVideoInputs() {
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoInputs = devices.filter(d => d.kind === "videoinput");
-      if (!videoInputs.length) return null;
-
-      const labelMatch = videoInputs.find(d => {
-        const label = (d.label || "").toLowerCase();
-        if (preferredFacing === "user") return label.includes("front") || label.includes("facing front") || label.includes("user");
-        return label.includes("back") || label.includes("rear") || label.includes("environment");
-      });
-      if (labelMatch) return labelMatch.deviceId;
-      return preferredFacing === "environment" ? videoInputs[videoInputs.length - 1].deviceId : videoInputs[0].deviceId;
+      const videoInputs = devices.filter((d) => d.kind === "videoinput");
+      videoInputIdsRef.current = videoInputs.map((d) => ({ id: d.deviceId, label: d.label }));
+      // try to set current index to match facingMode heuristics
+      if (videoInputIdsRef.current.length) {
+        // find best index if currentDeviceIndexRef not set
+        const idx = videoInputIdsRef.current.findIndex((v) =>
+          (facingMode === "user" ? /front|facing front|user/i : /back|rear|environment/i).test(v.label)
+        );
+        currentDeviceIndexRef.current = idx >= 0 ? idx : 0;
+      } else {
+        currentDeviceIndexRef.current = -1;
+      }
     } catch (err) {
-      console.warn("getPreferredDeviceId erro:", err);
-      return null;
+      console.warn("refreshVideoInputs erro", err);
+      videoInputIdsRef.current = [];
+      currentDeviceIndexRef.current = -1;
     }
+  }
+
+  async function getPreferredDeviceId(preferredFacing = "environment") {
+    // prefer device selected in videoInputIdsRef if available
+    await refreshVideoInputs();
+    const arr = videoInputIdsRef.current || [];
+    if (!arr.length) return null;
+    const idx = currentDeviceIndexRef.current >= 0 ? currentDeviceIndexRef.current : (preferredFacing === "environment" ? arr.length - 1 : 0);
+    return arr[idx]?.id || null;
   }
 
   function attachTrackListeners(stream) {
@@ -376,7 +405,6 @@ export default function App() {
         setCameraPermission("unknown");
         return;
       }
-      // name 'camera' is not universally supported; try 'camera' then fallback to 'microphone' or 'camera' only as best-effort
       const p = await navigator.permissions.query({ name: "camera" });
       if (p && p.state) {
         setCameraPermission(p.state); // 'granted' | 'prompt' | 'denied'
@@ -385,7 +413,6 @@ export default function App() {
         setCameraPermission("unknown");
       }
     } catch (err) {
-      // some browsers don't support camera permission query
       setCameraPermission("unknown");
     }
   }
@@ -403,6 +430,7 @@ export default function App() {
 
       // check permission best-effort
       checkCameraPermission();
+      await refreshVideoInputs();
 
       let constraints;
       const preferredDeviceId = await getPreferredDeviceId(facingMode);
@@ -486,6 +514,13 @@ export default function App() {
       // monitor stream health periodically
       startStreamHealthMonitor();
 
+      // set currentDeviceIndexRef to index of the device we opened (if found)
+      if (stream && stream.getVideoTracks && videoInputIdsRef.current.length) {
+        const label = stream.getVideoTracks()[0]?.label || "";
+        const idx = videoInputIdsRef.current.findIndex(v => (v.label || "") === label);
+        if (idx >= 0) currentDeviceIndexRef.current = idx;
+      }
+
       if (!opts.skipAutoStartRecognition && (cameraFullscreen || route === 'attendance') && autoRecognitionEnabled && recognitionEnabled) {
         if (!selectedCompany) {
           setStatusMsg("Selecione a empresa antes de abrir a câmera");
@@ -513,25 +548,67 @@ export default function App() {
     }
   }
 
+  // cycle to next available video device in videoInputIdsRef
   async function switchFacing() {
-    setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
-    if (streamRef.current) {
-      try {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-      } catch (e) {
-        console.error("Erro ao parar stream:", e);
-      }
-      streamRef.current = null;
-      if (videoRef.current) videoRef.current.srcObject = null;
+    if (switchingDeviceRef.current) {
+      // ignore rapid clicks
+      setStatusMsg("Aguardando troca de câmera...");
+      return;
     }
-    setTimeout(async () => {
-      try {
-        await openCamera();
-      } catch (err) {
-        console.error("Erro ao reabrir câmera:", err);
-        retryOpenCamera(2, 400);
+    switchingDeviceRef.current = true;
+    try {
+      await refreshVideoInputs();
+      const arr = videoInputIdsRef.current || [];
+      if (!arr.length) {
+        setStatusMsg("Nenhuma câmera disponível para alternar");
+        switchingDeviceRef.current = false;
+        return;
       }
-    }, 350);
+      // compute next index
+      let next = (currentDeviceIndexRef.current + 1) % arr.length;
+      if (next < 0) next = 0;
+      currentDeviceIndexRef.current = next;
+      const nextId = arr[next].id;
+
+      // stop and open with exact deviceId
+      stopRecognitionLoop();
+      stopCamera();
+
+      // set facingMode heuristic for future calls
+      setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
+
+      setStatusMsg("Trocando câmera...");
+      // open camera using exact deviceId constraint
+      try {
+        const constraints = {
+          video: {
+            deviceId: { exact: nextId },
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
+        };
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          streamRef.current = stream;
+          attachTrackListeners(stream);
+          await videoRef.current.play().catch(() => {});
+          setStatusMsg("Câmera trocada");
+          // update lastFrameAt and warmup
+          lastFrameAtRef.current = Date.now();
+          await warmUpVideoFrames(4, 60);
+        } else {
+          stream.getTracks().forEach(t => t.stop());
+          setStatusMsg("Vídeo não encontrado para trocar câmera");
+        }
+      } catch (err) {
+        console.error("Erro ao abrir deviceId específico:", err);
+        // fallback: try openCamera generic
+        await retryOpenCamera(1, 300);
+      }
+    } finally {
+      switchingDeviceRef.current = false;
+    }
   }
 
   function stopCamera() {
@@ -608,7 +685,7 @@ export default function App() {
     const payload = {
       company_id: String(selectedCompany),
       name: newName,
-      role: newDepartment,
+      department: newDepartment,
       descriptors: capturedDescriptors,
       photos: [],
     };
@@ -771,13 +848,17 @@ export default function App() {
               if (error) {
                 console.error("Erro inserindo attendance", error);
                 setStatusMsg("Erro ao salvar presença");
+              } else {
+                setStatusMsg(`✅ Presença registrada: ${idMap[matchedEmployeeId] || matchedEmployeeId}`);
               }
-            }).catch((e) => console.error("insert catch", e));
+            }).catch((e) => {
+              console.error("insert catch", e);
+              setStatusMsg("Erro ao salvar presença");
+            });
 
             lastSeenRef.current[matchedEmployeeId] = now;
             localAttendanceCache.current[matchedEmployeeId] = Date.now();
             setRecentMatches((prev) => [{ id: matchedEmployeeId, name: idMap[matchedEmployeeId] || matchedEmployeeId, timestamp: now }, ...prev].slice(0, 6));
-            setStatusMsg(`✅ Presença registrada: ${idMap[matchedEmployeeId] || matchedEmployeeId}`);
             // update history UI in background
             fetchAttendances({ company_id: selectedCompany });
           }
@@ -821,7 +902,10 @@ export default function App() {
           setStatusMsg("Stream travado — reiniciando câmera...");
           stopRecognitionLoop();
           stopCamera();
-          retryOpenCamera(2, 400);
+          retryOpenCamera(2, 400).then((ok) => {
+            if (ok) setStatusMsg("Câmera reiniciada automaticamente");
+            else setStatusMsg("Falha ao reiniciar câmera automaticamente");
+          });
         }
       }
     }, 1200);
@@ -867,7 +951,9 @@ export default function App() {
     setStatusMsg("Reiniciando câmera...");
     stopRecognitionLoop();
     stopCamera();
-    await retryOpenCamera(2, 300);
+    const ok = await retryOpenCamera(2, 300);
+    if (ok) setStatusMsg("Câmera reiniciada");
+    else setStatusMsg("Falha ao reiniciar câmera");
   }
 
   // ------------------ export XLSX ------------------
@@ -878,7 +964,9 @@ export default function App() {
     }
     const rows = attendances.map((r) => ({
       id: r.id,
-      employee: r.employees?.name || r.employee_id,
+      employee: r.employee_name || r.employee_id,
+      department: r.department,
+      company: r.company_name,
       attended_at: r.attended_at,
       confidence: r.confidence,
     }));
@@ -916,13 +1004,9 @@ export default function App() {
 
   // small helper for indicator
   const RecognitionIndicator = () => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <div style={{
-        width: 12, height: 12, borderRadius: 12,
-        background: recognitionEnabled ? '#22c55e' : '#ef4444',
-        boxShadow: recognitionEnabled ? '0 0 8px rgba(34,197,94,0.4)' : '0 0 8px rgba(239,68,68,0.3)'
-      }} />
-      <div style={{ fontSize: 13 }}>{recognitionEnabled ? 'Reconhecimento: ON' : 'Reconhecimento: OFF'}</div>
+    <div>
+      
+      
     </div>
   );
 
@@ -945,6 +1029,7 @@ export default function App() {
 
             {user && (
               <>
+                <div style={{ marginRight: 12 }}><RecognitionIndicator /></div>
                 <div className="user-pill">{user.email || user.user_metadata?.full_name || user.id}</div>
                 <button className="btn" onClick={handleSignOut}>Sair</button>
               </>
@@ -1075,7 +1160,16 @@ export default function App() {
 
                   <div className="form-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <button className="btn primary" onClick={saveNewEmployee}>Salvar Funcionário</button>
-                    <button className="btn" onClick={() => { setRecognitionEnabled((s) => !s); }}>{recognitionEnabled ? 'Parar Reconhecimento' : 'Iniciar Reconhecimento'}</button>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        // use explicit handlers so indicator and state stay consistent
+                        recognitionEnabled ? handleStopRecognition() : handleStartRecognition();
+                        setTimeout(() => { /* nothing else */ }, 200);
+                      }}
+                    >
+                      {recognitionEnabled ? 'Parar Reconhecimento' : 'Iniciar Reconhecimento'}
+                    </button>
                     <div style={{ marginLeft: 'auto' }}>{cameraPermission !== 'unknown' ? `Permissão câmera: ${cameraPermission}` : ''}</div>
                   </div>
                 </div>
@@ -1096,18 +1190,32 @@ export default function App() {
                   </div>
 
                   <div style={{ marginLeft: 'auto', display: 'flex', gap: 10 }}>
-                    <button className="btn" onClick={() => fetchAttendances({ company_id: selectedCompany })}>Atualizar</button>
+                    <button className="btn" onClick={() => { fetchAttendances({ company_id: selectedCompany }); setStatusMsg("Histórico atualizado"); }}>Atualizar</button>
                     <button className="btn primary" onClick={exportAttendancesToExcel}>Exportar XLSX</button>
                   </div>
 
                   <div className="table-wrap">
                     <table className="table">
                       <thead>
-                        <tr><th>ID</th><th>Funcionário</th><th>Quando</th><th>Confiança</th></tr>
+                        <tr>
+                          <th>ID</th>
+                          <th>Funcionário</th>
+                          <th>Departamento</th>
+                          <th>Empresa</th>
+                          <th>Quando</th>
+                          <th>Confiança</th>
+                        </tr>
                       </thead>
                       <tbody>
                         {attendances.map((a) => (
-                          <tr key={a.id}><td>{String(a.id).slice(0,6)}</td><td>{a.employees?.name || a.employee_id}</td><td>{new Date(a.attended_at).toLocaleString()}</td><td>{Number(a.confidence).toFixed(2)}</td></tr>
+                          <tr key={a.id}>
+                            <td>{String(a.id).slice(0,6)}</td>
+                            <td>{a.employee_name || a.employee_id}</td>
+                            <td>{a.department || '-'}</td>
+                            <td>{a.company_name || '-'}</td>
+                            <td>{new Date(a.attended_at).toLocaleString()}</td>
+                            <td>{a.confidence != null ? Number(a.confidence).toFixed(2) : '-'}</td>
+                          </tr>
                         ))}
                       </tbody>
                     </table>
@@ -1143,11 +1251,7 @@ export default function App() {
           <div className="camera-controls centered" style={{ bottom: 20 }}>
             <button
               className="btn-switch-camera glass"
-              onClick={() => {
-                switchFacing();
-                stopRecognitionLoop();
-                setTimeout(() => openCamera(), 400);
-              }}
+              onClick={() => switchFacing()}
               title="Trocar câmera"
             >
               🔁
@@ -1155,9 +1259,7 @@ export default function App() {
 
             <button
               className="btn-switch-camera glass"
-              onClick={() => {
-                recognitionEnabled ? handleStopRecognition() : handleStartRecognition();
-              }}
+              onClick={() => { recognitionEnabled ? handleStopRecognition() : handleStartRecognition(); }}
               title={recognitionEnabled ? "Parar reconhecimento" : "Iniciar reconhecimento"}
               style={{ marginLeft: 10 }}
             >
