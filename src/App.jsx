@@ -1115,7 +1115,7 @@ export default function App() {
 
           <div className="camera-controls centered">
             <button className="btn-switch-camera glass" onClick={() => { switchFacing(); stopRecognitionLoop(); setTimeout(() => openCamera(), 400); }}>
-              🔁
+              🔄
             </button>
 
             <button className="btn-switch-camera glass" onClick={() => { recognitionEnabled ? handleStopRecognition() : handleStartRecognition(); }} title={recognitionEnabled ? 'Parar reconhecimento' : 'Iniciar reconhecimento'} style={{ marginLeft: 10 }}>
@@ -1123,7 +1123,7 @@ export default function App() {
             </button>
 
             <button className="btn-switch-camera glass" onClick={() => handleRestartCamera()} title="Reiniciar câmera" style={{ marginLeft: 10 }}>
-              🔄
+              🎥
             </button>
           </div>
         </div>

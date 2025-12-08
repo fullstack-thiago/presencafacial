@@ -783,7 +783,7 @@ body {
 .recent-matches.left {
   position: absolute;
   left: 12px;
-  top: 12px;
+  top: 35px;
   background: rgba(255,255,255,0.06);
   color: #53e427;
   padding: 10px 12px;
