@@ -1044,10 +1044,6 @@ export default function App() {
                         <span className="icon-large">🎥</span>
                         <span className="btn-label"></span>
                       </button>
-
-                      
-
-                      
                     </div>
                   </div>
 
@@ -1149,7 +1145,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="status-bar">{statusMsg}</div>
+      {/* Status bar removed — não renderizamos mais statusMsg aqui */}
     </div>
   );
 }
