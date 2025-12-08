@@ -729,7 +729,7 @@ export default function App() {
           if (ctx) {
             const box = det.detection.box;
             ctx.lineWidth = 4;
-            ctx.strokeStyle = 'rgba(0, 190, 120, 0.95)';
+            ctx.strokeStyle = '#53e427';
             ctx.strokeRect(box.x, box.y, box.width, box.height);
 
             const nameText = (label !== 'unknown') ? (idMap[label] || label) : 'Desconhecido';
@@ -738,7 +738,7 @@ export default function App() {
             const padding = 8;
             const textWidth = ctx.measureText(nameText).width + padding * 2;
             const textHeight = fontSize + 8;
-            ctx.fillStyle = 'rgba(0, 190, 120, 0.95)';
+            ctx.fillStyle = '#53e427';
             ctx.fillRect(box.x, Math.max(0, box.y - textHeight - 6), textWidth, textHeight);
             ctx.fillStyle = '#fff';
             ctx.fillText(nameText, box.x + padding, Math.max(0, box.y - 10));
