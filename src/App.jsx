@@ -48,6 +48,13 @@ export default function App() {
   const [facingMode, setFacingMode] = useState("environment");
   const [statusMsg, setStatusMsg] = useState("");
 
+  // small control flags & refs for blocking repetitive actions
+  const switchInProgressRef = useRef(false);
+  const openInProgressRef = useRef(false);
+
+  // recognition enabled state + persistence
+  const [recognitionEnabled, setRecognitionEnabled] = useState(false);
+
   // Register form
   const [newName, setNewName] = useState("");
   const [newDepartment, setNewDepartment] = useState("");
@@ -89,6 +96,9 @@ export default function App() {
       setUser({ name: HARDCODED_USER.name, username: HARDCODED_USER.username });
       setRoute("dashboard");
     }
+    // restore recognition preference
+    const pref = localStorage.getItem('recognitionEnabled');
+    if (pref === '1') setRecognitionEnabled(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -144,14 +154,14 @@ export default function App() {
     if (!cameraFullscreen) return;
     if (autoRecognitionEnabled) {
       // start recognition if camera is open
-      if (videoRef.current && streamRef.current) {
+      if (videoRef.current && streamRef.current && recognitionEnabled) {
         prepareFaceMatcherAndStart();
       }
     } else {
       stopRecognitionLoop();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoRecognitionEnabled, cameraFullscreen]);
+  }, [autoRecognitionEnabled, cameraFullscreen, recognitionEnabled]);
 
   // ---------- Supabase helpers ----------
   async function fetchCompanies() {
@@ -309,8 +319,31 @@ export default function App() {
     return false;
   }
 
+  // check permission best-effort
+  async function checkCameraPermission() {
+    try {
+      if (!navigator.permissions || !navigator.permissions.query) {
+        return 'unknown';
+      }
+      try {
+        const p = await navigator.permissions.query({ name: "camera" });
+        // some browsers may throw; if success, return state
+        return p.state;
+      } catch (err) {
+        return 'unknown';
+      }
+    } catch (err) {
+      return 'unknown';
+    }
+  }
+
   // -------------------- openCamera aprimorada --------------------
   async function openCamera(opts = { skipAutoStartRecognition: false, retrying: false }) {
+    if (openInProgressRef.current) {
+      console.log("openCamera: já em progresso");
+      return;
+    }
+    openInProgressRef.current = true;
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         setStatusMsg("getUserMedia não suportado neste navegador");
@@ -319,6 +352,8 @@ export default function App() {
 
       stopRecognitionLoop();
       stopCamera();
+
+      await checkCameraPermission();
 
       let constraints;
       const preferredDeviceId = await getPreferredDeviceId(facingMode);
@@ -357,7 +392,7 @@ export default function App() {
       await videoRef.current.play().catch((e) => {
         console.warn("play() falhou:", e);
       });
-      setStatusMsg("Câmera aberta");
+      setStatusMsg("Câmera aberta — aquecendo frames...");
 
       // wait for valid video size
       await new Promise((resolve) => {
@@ -388,7 +423,7 @@ export default function App() {
 
       await warmUpVideoFrames(6, 60);
 
-      if (!opts.skipAutoStartRecognition && (cameraFullscreen || route === 'attendance') && autoRecognitionEnabled) {
+      if (!opts.skipAutoStartRecognition && (cameraFullscreen || route === 'attendance') && autoRecognitionEnabled && recognitionEnabled) {
         if (!selectedCompany) {
           setStatusMsg("Selecione a empresa antes de abrir a câmera");
           return;
@@ -408,36 +443,45 @@ export default function App() {
         }, 250);
       }
 
+      setStatusMsg("Câmera pronta");
       return true;
     } catch (err) {
       console.error("Erro ao abrir câmera (aprimorada):", err);
       setStatusMsg("Erro ao abrir câmera: " + (err && err.message ? err.message : String(err)));
       throw err;
+    } finally {
+      openInProgressRef.current = false;
     }
   }
 
   // -------------------- switchFacing aprimorado --------------------
   async function switchFacing() {
-    setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
+    if (switchInProgressRef.current) return;
+    switchInProgressRef.current = true;
+    try {
+      setFacingMode((prev) => (prev === "user" ? "environment" : "user"));
 
-    if (streamRef.current) {
-      try {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-      } catch (e) {
-        console.error("Erro ao parar stream:", e);
+      if (streamRef.current) {
+        try {
+          streamRef.current.getTracks().forEach((t) => t.stop());
+        } catch (e) {
+          console.error("Erro ao parar stream:", e);
+        }
+        streamRef.current = null;
+        if (videoRef.current) videoRef.current.srcObject = null;
       }
-      streamRef.current = null;
-      if (videoRef.current) videoRef.current.srcObject = null;
-    }
 
-    setTimeout(async () => {
+      await new Promise(r => setTimeout(r, 320));
       try {
         await openCamera();
+        setStatusMsg("Câmera trocada");
       } catch (err) {
-        console.error("Erro ao reabrir câmera:", err);
+        console.error("Erro ao reabrir câmera após troca", err);
         retryOpenCamera(2, 400);
       }
-    }, 350);
+    } finally {
+      setTimeout(() => { switchInProgressRef.current = false; }, 550);
+    }
   }
 
   function stopCamera() {
@@ -502,13 +546,9 @@ export default function App() {
       try {
         const { data, error } = await supabase.from("employees").insert([payload]).select();
         if (error) {
-          // If error likely due to column missing, try next payload variant
           console.warn("insert attempt error for payload:", payload, error);
-          // if error is constraint or duplicate, return it immediately
-          // but otherwise continue
           continue;
         }
-        // success
         return { success: true, data };
       } catch (err) {
         console.error("insert exception for payload:", payload, err);
@@ -532,7 +572,6 @@ export default function App() {
       return;
     }
 
-    // Build tolerant payload variants
     const base = {
       company_id: String(selectedCompany),
       name: newName,
@@ -540,12 +579,11 @@ export default function App() {
       photos: [],
     };
 
-    // Try different shapes: department, role, both, and fallback with department name 'N/D'
     const payloads = [
-      { ...base, department: newDepartment },          // if DB has department
-      { ...base, role: newDepartment },                // if DB uses role
-      { ...base, department: newDepartment, role: newDepartment }, // both
-      { ...base, department: newDepartment || "N/D" }, // fallback
+      { ...base, department: newDepartment },
+      { ...base, role: newDepartment },
+      { ...base, department: newDepartment, role: newDepartment },
+      { ...base, department: newDepartment || "N/D" },
     ];
 
     setStatusMsg("Salvando funcionário...");
@@ -557,12 +595,10 @@ export default function App() {
       return;
     }
 
-    // success
     alert("Funcionário salvo");
     setNewName("");
     setNewDepartment("");
     setCapturedDescriptors([]);
-    // fetch again to refresh UI (use the currently selected company)
     fetchEmployees(selectedCompany);
     setRoute("dashboard");
     setStatusMsg("Funcionário salvo");
@@ -579,7 +615,6 @@ export default function App() {
       return;
     }
 
-    // fetch employees once, tolerant select
     const { data: emps, error: e } = await supabase
       .from("employees")
       .select("id, name, role, department, descriptors")
@@ -595,25 +630,17 @@ export default function App() {
       return;
     }
 
-    // normalize descriptors: accept null, array, or JSON string
     const normalized = emps.map((emp) => {
       let descs = emp.descriptors || [];
       if (typeof descs === "string") {
-        try {
-          descs = JSON.parse(descs);
-        } catch (err) {
-          // leave as-is (will be handled below)
-          console.warn("descriptors parse failed", emp.id, err);
-        }
+        try { descs = JSON.parse(descs); } catch (err) { console.warn("descriptors parse failed", emp.id, err); }
       }
-      // ensure array of arrays
       if (!Array.isArray(descs)) descs = [];
       return { ...emp, descriptors: descs };
     });
 
     setEmployees(normalized);
 
-    // build map and matcher (skip entries without descriptors)
     const idMap = {};
     const labeled = [];
     for (const e2 of normalized) {
@@ -622,11 +649,8 @@ export default function App() {
       const descs = descsRaw
         .map((d) => {
           try {
-            // if already number array -> Float32Array
             if (Array.isArray(d)) return new Float32Array(d);
-            // if object-like, try to convert values
             if (d && typeof d === "object") return new Float32Array(Object.values(d));
-            // else ignore
             return null;
           } catch (err) {
             console.warn("erro convertendo descriptor", e2.id, err);
@@ -729,7 +753,6 @@ export default function App() {
               continue;
             }
 
-            // check DB last record
             const { data: last, error } = await supabase
               .from("attendances")
               .select("*")
@@ -789,6 +812,49 @@ export default function App() {
     setStatusMsg('⏹️ Reconhecimento parado');
   }
 
+  // manual restart camera
+  async function handleRestartCamera() {
+    setStatusMsg("Reiniciando câmera...");
+    stopRecognitionLoop();
+    stopCamera();
+    const ok = await retryOpenCamera(2, 300);
+    setStatusMsg(ok ? "Câmera reiniciada" : "Falha ao reiniciar câmera");
+  }
+
+  // recognition toggle (start/stop) with persistence
+  async function handleStartRecognition() {
+    localStorage.setItem('recognitionEnabled', '1');
+    setRecognitionEnabled(true);
+    setStatusMsg("Iniciando reconhecimento...");
+
+    if (!videoRef.current || !streamRef.current) {
+      try {
+        await openCamera({ skipAutoStartRecognition: true });
+      } catch (e) {
+        console.error("Erro abrindo camera antes de iniciar reconhecimento", e);
+        setStatusMsg("Erro ao abrir câmera antes de iniciar reconhecimento");
+        return;
+      }
+    }
+
+    try {
+      await prepareFaceMatcherAndStart();
+      setStatusMsg("Reconhecimento: ON");
+    } catch (err) {
+      console.error("Falha ao preparar matcher", err);
+      setStatusMsg("Falha ao iniciar reconhecimento");
+      setRecognitionEnabled(false);
+      localStorage.removeItem('recognitionEnabled');
+    }
+  }
+
+  function handleStopRecognition() {
+    localStorage.removeItem('recognitionEnabled');
+    setRecognitionEnabled(false);
+    stopRecognitionLoop();
+    setStatusMsg("Reconhecimento: OFF");
+  }
+
   // ---------- export XLSX ----------
   function exportAttendancesToExcel() {
     if (!attendances || attendances.length === 0) {
@@ -827,6 +893,14 @@ export default function App() {
     const val = e.target.value;
     applyHistoryFilter(val);
   }
+
+  // small indicator component
+  const RecognitionIndicator = () => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ width: 12, height: 12, borderRadius: 12, background: recognitionEnabled ? '#22c55e' : '#ef4444', boxShadow: recognitionEnabled ? '0 0 8px rgba(34,197,94,0.4)' : '0 0 8px rgba(239,68,68,0.3)' }} />
+      <div style={{ fontSize: 13 }}>{recognitionEnabled ? 'Reconhecimento: ON' : 'Reconhecimento: OFF'}</div>
+    </div>
+  );
 
   // UI
   return (
@@ -880,7 +954,7 @@ export default function App() {
               {route === "dashboard" && (
                 <div className="card">
                   <h2>Dashboard 💻</h2>
-                  <br></br>
+                  <br />
                   <div className="row gap">
                     <div className="col">
                       <label className="label">🏢 - Empresa </label>
@@ -896,10 +970,7 @@ export default function App() {
                         <button
                           className="btn primary"
                           onClick={() => {
-                            if (!selectedCompany) {
-                              alert("Selecione uma empresa antes de registrar presença");
-                              return;
-                            }
+                            if (!selectedCompany) { alert("Selecione uma empresa antes de registrar presença"); return; }
                             setCameraFullscreen(true);
                             openCamera();
                           }}
@@ -907,13 +978,7 @@ export default function App() {
                           Abrir Câmera
                         </button>
 
-                        <button
-                          className="btn"
-                          onClick={() => {
-                            fetchAttendances({ company_id: selectedCompany });
-                            setRoute("history");
-                          }}
-                        >
+                        <button className="btn" onClick={() => { fetchAttendances({ company_id: selectedCompany }); setRoute("history"); }}>
                           Ver Histórico
                         </button>
                       </div>
@@ -937,7 +1002,7 @@ export default function App() {
               {route === "register" && (
                 <div className="card">
                   <h2>✚ Registrar Funcionário</h2>
-                  <br></br>
+                  <br />
 
                   <div className="form-row">
                     <label>Empresa</label>
@@ -965,32 +1030,17 @@ export default function App() {
 
                   <div className="form-row actions actions-centered">
                     <div className="btn-group btn-group-modern" role="toolbar" aria-label="Controles da câmera">
-                      <button
-                        className="btn-ghost cam-btn"
-                        onClick={openCamera}
-                        aria-label="Abrir câmera"
-                        title="Abrir Câmera"
-                      >
+                      <button className="btn-ghost cam-btn" onClick={openCamera} aria-label="Abrir câmera" title="Abrir Câmera">
                         <span className="icon-large">🔍</span>
                         <span className="btn-label">Abrir</span>
                       </button>
 
-                      <button
-                        className="btn-ghost cam-btn"
-                        onClick={() => { switchFacing(); }}
-                        aria-label="Trocar câmera"
-                        title="Trocar Câmera"
-                      >
+                      <button className="btn-ghost cam-btn" onClick={() => { switchFacing(); }} aria-label="Trocar câmera" title="Trocar Câmera">
                         <span className="icon-large">🔁</span>
                         <span className="btn-label">Trocar</span>
                       </button>
 
-                      <button
-                        className="btn-primary cam-btn"
-                        onClick={handleCaptureForRegister}
-                        aria-label="Capturar rosto"
-                        title="Capturar Rosto"
-                      >
+                      <button className="btn-primary cam-btn" onClick={handleCaptureForRegister} aria-label="Capturar rosto" title="Capturar Rosto">
                         <span className="icon-large">📸</span>
                         <span className="btn-label">Capturar</span>
                       </button>
@@ -1050,6 +1100,10 @@ export default function App() {
 
           <button className="camera-close" aria-label="Fechar" onClick={() => { stopRecognitionLoop(); stopCamera(); setCameraFullscreen(false); }}>✖</button>
 
+          <div style={{ position: 'absolute', top: 12, left: 12 }}>
+            <RecognitionIndicator />
+          </div>
+
           <div className="recent-matches left">
             <h4>Últimos registros</h4>
             <ul>
@@ -1060,15 +1114,16 @@ export default function App() {
           </div>
 
           <div className="camera-controls centered">
-            <button
-              className="btn-switch-camera glass"
-              onClick={() => {
-                switchFacing();
-                stopRecognitionLoop();
-                setTimeout(() => openCamera(), 400);
-              }}
-            >
+            <button className="btn-switch-camera glass" onClick={() => { switchFacing(); stopRecognitionLoop(); setTimeout(() => openCamera(), 400); }}>
               🔁
+            </button>
+
+            <button className="btn-switch-camera glass" onClick={() => { recognitionEnabled ? handleStopRecognition() : handleStartRecognition(); }} title={recognitionEnabled ? 'Parar reconhecimento' : 'Iniciar reconhecimento'} style={{ marginLeft: 10 }}>
+              {recognitionEnabled ? '⏸️' : '▶️'}
+            </button>
+
+            <button className="btn-switch-camera glass" onClick={() => handleRestartCamera()} title="Reiniciar câmera" style={{ marginLeft: 10 }}>
+              🔄
             </button>
           </div>
         </div>
