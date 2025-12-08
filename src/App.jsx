@@ -16,8 +16,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 const DEDUP_MS = 5 * 60 * 1000; // 5 minutos
 const DETECTION_INTERVAL_MS = 700;
 const MATCH_THRESHOLD = 0.55;
+const STREAM_STUCK_THRESHOLD_MS = 2500; // se sem frames por > X, tentar reiniciar
 
-// App
 export default function App() {
   // auth / user
   const [user, setUser] = useState(null);
@@ -53,6 +53,15 @@ export default function App() {
   const [autoRecognitionEnabled, setAutoRecognitionEnabled] = useState(true);
   const [recentMatches, setRecentMatches] = useState([]);
   const [showOverlay, setShowOverlay] = useState(true);
+
+  // new: manual recognition toggle
+  const [recognitionEnabled, setRecognitionEnabled] = useState(false);
+
+  // permission state
+  const [cameraPermission, setCameraPermission] = useState("unknown"); // 'granted','denied','prompt','unknown'
+
+  // stream health
+  const lastFrameAtRef = useRef(Date.now());
 
   // registration
   const [newName, setNewName] = useState("");
@@ -169,10 +178,30 @@ export default function App() {
     loadFaceApiAndModels();
     fetchCompanies();
 
+    // device change listener (hot-plug cameras)
+    function onDeviceChange() {
+      console.log("devicechange detected");
+      setStatusMsg("Mudança de dispositivos detectada, verificando câmera...");
+      // try to reopen camera if we had one open
+      if (streamRef.current) {
+        retryOpenCamera(2, 400);
+      }
+    }
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", onDeviceChange);
+    } else if (navigator.mediaDevices && navigator.mediaDevices.ondevicechange !== undefined) {
+      navigator.mediaDevices.ondevicechange = onDeviceChange;
+    }
+
     return () => {
       mounted = false;
       stopRecognitionLoop();
       stopCamera();
+      if (navigator.mediaDevices && navigator.mediaDevices.removeEventListener) {
+        navigator.mediaDevices.removeEventListener("devicechange", onDeviceChange);
+      } else if (navigator.mediaDevices && navigator.mediaDevices.ondevicechange !== undefined) {
+        navigator.mediaDevices.ondevicechange = null;
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -301,6 +330,11 @@ export default function App() {
     });
   }
 
+  // Called inside RAF loop when a frame is painted
+  function markFrameSeen() {
+    lastFrameAtRef.current = Date.now();
+  }
+
   async function warmUpVideoFrames(frames = 6, msBetween = 80) {
     if (!videoRef.current) return;
     const v = videoRef.current;
@@ -335,6 +369,27 @@ export default function App() {
     return false;
   }
 
+  // Try to detect permission status (best-effort)
+  async function checkCameraPermission() {
+    try {
+      if (!navigator.permissions || !navigator.permissions.query) {
+        setCameraPermission("unknown");
+        return;
+      }
+      // name 'camera' is not universally supported; try 'camera' then fallback to 'microphone' or 'camera' only as best-effort
+      const p = await navigator.permissions.query({ name: "camera" });
+      if (p && p.state) {
+        setCameraPermission(p.state); // 'granted' | 'prompt' | 'denied'
+        p.onchange = () => setCameraPermission(p.state);
+      } else {
+        setCameraPermission("unknown");
+      }
+    } catch (err) {
+      // some browsers don't support camera permission query
+      setCameraPermission("unknown");
+    }
+  }
+
   // openCamera enhanced
   async function openCamera(opts = { skipAutoStartRecognition: false, retrying: false }) {
     try {
@@ -345,6 +400,9 @@ export default function App() {
 
       stopRecognitionLoop();
       stopCamera();
+
+      // check permission best-effort
+      checkCameraPermission();
 
       let constraints;
       const preferredDeviceId = await getPreferredDeviceId(facingMode);
@@ -379,6 +437,15 @@ export default function App() {
       videoRef.current.srcObject = stream;
       streamRef.current = stream;
       attachTrackListeners(stream);
+
+      // update frame monitor
+      lastFrameAtRef.current = Date.now();
+
+      // when video plays, mark frames
+      const onPlay = () => {
+        markFrameSeen();
+      };
+      videoRef.current.addEventListener("playing", onPlay, { once: true });
 
       await videoRef.current.play().catch((e) => {
         console.warn("play() falhou:", e);
@@ -416,7 +483,10 @@ export default function App() {
 
       await warmUpVideoFrames(6, 60);
 
-      if (!opts.skipAutoStartRecognition && (cameraFullscreen || route === 'attendance') && autoRecognitionEnabled) {
+      // monitor stream health periodically
+      startStreamHealthMonitor();
+
+      if (!opts.skipAutoStartRecognition && (cameraFullscreen || route === 'attendance') && autoRecognitionEnabled && recognitionEnabled) {
         if (!selectedCompany) {
           setStatusMsg("Selecione a empresa antes de abrir a câmera");
           return;
@@ -465,6 +535,7 @@ export default function App() {
   }
 
   function stopCamera() {
+    stopStreamHealthMonitor();
     if (streamRef.current) {
       try {
         streamRef.current.getTracks().forEach((t) => t.stop());
@@ -571,6 +642,10 @@ export default function App() {
       setStatusMsg('Modelos não carregados');
       return;
     }
+    if (!recognitionEnabled) {
+      setStatusMsg('Reconhecimento desligado (pressione Iniciar)');
+      return;
+    }
 
     // fetch employees basic list (for name mapping)
     await fetchEmployees(selectedCompany);
@@ -606,9 +681,14 @@ export default function App() {
     const loop = async (timestamp) => {
       recognitionRaf.current = requestAnimationFrame(loop);
       if (!recognitionRunningRef.current) return;
+      if (!recognitionEnabled) return;
       if (!videoRef.current || videoRef.current.paused || videoRef.current.ended) return;
+      // throttle adaptive for mobile
       if (timestamp - lastRun < (window.innerWidth <= 540 ? DETECTION_INTERVAL_MS - 200 : DETECTION_INTERVAL_MS)) return;
       lastRun = timestamp;
+
+      // mark that we saw a frame
+      markFrameSeen();
 
       if (isProcessingRef.current) return;
       isProcessingRef.current = true;
@@ -642,7 +722,6 @@ export default function App() {
         const matcher = faceMatcherRef.current;
         const idMap = idNameMapRef.current;
 
-        // process detections in sequence but avoid awaiting DB reads/inserts inside loop
         for (const det of detections) {
           const best = matcher.findBestMatch(det.descriptor);
           const label = best.label;
@@ -729,6 +808,68 @@ export default function App() {
     setStatusMsg('⏹️ Reconhecimento parado');
   }
 
+  // ------------------ stream health monitor ------------------
+  const streamHealthInterval = useRef(null);
+  function startStreamHealthMonitor() {
+    stopStreamHealthMonitor();
+    streamHealthInterval.current = setInterval(() => {
+      // if we have a stream but didn't see any frames in threshold -> try to reopen
+      if (streamRef.current) {
+        const last = lastFrameAtRef.current || 0;
+        if (Date.now() - last > STREAM_STUCK_THRESHOLD_MS) {
+          console.warn("Stream parece travado (sem frames). Tentando reiniciar câmera...");
+          setStatusMsg("Stream travado — reiniciando câmera...");
+          stopRecognitionLoop();
+          stopCamera();
+          retryOpenCamera(2, 400);
+        }
+      }
+    }, 1200);
+  }
+  function stopStreamHealthMonitor() {
+    if (streamHealthInterval.current) {
+      clearInterval(streamHealthInterval.current);
+      streamHealthInterval.current = null;
+    }
+  }
+
+  // ------------------ external controls: start/stop recognition ------------------
+  async function handleStartRecognition() {
+    if (!videoRef.current || !streamRef.current) {
+      try {
+        await openCamera({ skipAutoStartRecognition: true });
+      } catch (e) {
+        console.error("Erro abrindo camera antes de iniciar reconhecimento", e);
+        return;
+      }
+    }
+
+    setRecognitionEnabled(true);
+    setStatusMsg("Tentando iniciar reconhecimento...");
+    // prepare matcher and then start
+    try {
+      await prepareFaceMatcherAndStart();
+      setStatusMsg("Reconhecimento: ON");
+    } catch (e) {
+      console.error("Erro ao preparar matcher", e);
+      setStatusMsg("Falha ao iniciar reconhecimento");
+    }
+  }
+
+  function handleStopRecognition() {
+    setRecognitionEnabled(false);
+    stopRecognitionLoop();
+    setStatusMsg("Reconhecimento: OFF");
+  }
+
+  // manual restart camera
+  async function handleRestartCamera() {
+    setStatusMsg("Reiniciando câmera...");
+    stopRecognitionLoop();
+    stopCamera();
+    await retryOpenCamera(2, 300);
+  }
+
   // ------------------ export XLSX ------------------
   function exportAttendancesToExcel() {
     if (!attendances || attendances.length === 0) {
@@ -772,6 +913,18 @@ export default function App() {
   if (authLoading) {
     return <div className="app-root"><div className="center-card card"><h3>Inicializando...</h3></div></div>;
   }
+
+  // small helper for indicator
+  const RecognitionIndicator = () => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{
+        width: 12, height: 12, borderRadius: 12,
+        background: recognitionEnabled ? '#22c55e' : '#ef4444',
+        boxShadow: recognitionEnabled ? '0 0 8px rgba(34,197,94,0.4)' : '0 0 8px rgba(239,68,68,0.3)'
+      }} />
+      <div style={{ fontSize: 13 }}>{recognitionEnabled ? 'Reconhecimento: ON' : 'Reconhecimento: OFF'}</div>
+    </div>
+  );
 
   return (
     <div className="app-root">
@@ -920,8 +1073,10 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="form-row">
+                  <div className="form-row" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <button className="btn primary" onClick={saveNewEmployee}>Salvar Funcionário</button>
+                    <button className="btn" onClick={() => { setRecognitionEnabled((s) => !s); }}>{recognitionEnabled ? 'Parar Reconhecimento' : 'Iniciar Reconhecimento'}</button>
+                    <div style={{ marginLeft: 'auto' }}>{cameraPermission !== 'unknown' ? `Permissão câmera: ${cameraPermission}` : ''}</div>
                   </div>
                 </div>
               )}
@@ -972,7 +1127,11 @@ export default function App() {
 
           <button className="camera-close" aria-label="Fechar" onClick={() => { stopRecognitionLoop(); stopCamera(); setCameraFullscreen(false); }}>✖</button>
 
-          <div className="recent-matches left">
+          <div style={{ position: 'absolute', top: 12, left: 12 }}>
+            <RecognitionIndicator />
+          </div>
+
+          <div className="recent-matches left" style={{ top: 48 }}>
             <h4>Últimos registros</h4>
             <ul>
               {recentMatches.map((m) => (
@@ -981,7 +1140,7 @@ export default function App() {
             </ul>
           </div>
 
-          <div className="camera-controls centered">
+          <div className="camera-controls centered" style={{ bottom: 20 }}>
             <button
               className="btn-switch-camera glass"
               onClick={() => {
@@ -989,8 +1148,29 @@ export default function App() {
                 stopRecognitionLoop();
                 setTimeout(() => openCamera(), 400);
               }}
+              title="Trocar câmera"
             >
               🔁
+            </button>
+
+            <button
+              className="btn-switch-camera glass"
+              onClick={() => {
+                recognitionEnabled ? handleStopRecognition() : handleStartRecognition();
+              }}
+              title={recognitionEnabled ? "Parar reconhecimento" : "Iniciar reconhecimento"}
+              style={{ marginLeft: 10 }}
+            >
+              {recognitionEnabled ? '⏸️' : '▶️'}
+            </button>
+
+            <button
+              className="btn-switch-camera glass"
+              onClick={() => handleRestartCamera()}
+              title="Reiniciar câmera"
+              style={{ marginLeft: 10 }}
+            >
+              🔄
             </button>
           </div>
         </div>
