@@ -12,11 +12,10 @@ const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// --- HARD-CODED SINGLE USER (determinada no código) ---
 const HARDCODED_USER = {
-  username: "admin",
-  password: "admin",
-  name: "R.R.",
+  username: import.meta.env.VITE_APP_USER_USERNAME,
+  password: import.meta.env.VITE_APP_USER_PASSWORD,
+  name: import.meta.env.VITE_APP_USER_NAME,
 };
 
 export default function App() {
