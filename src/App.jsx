@@ -913,7 +913,7 @@ export default function App() {
           <div className="brand">
             <img src={logo} alt="Logo da Clínica" className="logo-clinica" />
             <div>
-              <h1 className="title">R.R. Prevenção em Saúde</h1>
+              <h1 className="title">R.R. Prevençãoo em Saúde</h1>
               <p className="subtitle">Presença Facial</p>
             </div>
           </div>
